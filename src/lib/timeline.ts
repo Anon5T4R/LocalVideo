@@ -43,6 +43,41 @@ export interface TitleProps {
   anchor: TitleAnchor;
 }
 
+/** Recorte do frame-fonte, em FRAÇÕES 0..1 (resolução-independente: guardar em
+ *  pixels amarraria o corte à resolução exata do arquivo). x/y = canto sup-esq. */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Transform (o PiP): onde e quão grande o clipe entra por cima. `x`/`y` são a
+ *  posição do canto sup-esq como FRAÇÃO do canvas de saída; `scale` é a largura
+ *  do clipe como fração da largura de saída (0.3 = 30%). Reusa o overlay da v0.2
+ *  — sem transform, o clipe cobre o quadro inteiro (comportamento antigo). */
+export interface Transform {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** Ajuste de cor (o `eq` do ffmpeg). brilho −1..1 (0=neutro, ADITIVO), contraste
+ *  0..2 (1=neutro), saturação 0..3 (1=neutro). */
+export interface ColorAdjust {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+}
+
+/** Um ponto de envelope. `t` é FRAÇÃO da duração do clipe (0..1); `v` é o valor
+ *  (opacidade 0..1 ou ganho de volume linear). Guardar em fração (não ms) faz o
+ *  envelope sobreviver a aparar/mudar velocidade sem recalcular ponto a ponto. */
+export interface Keyframe {
+  t: number;
+  v: number;
+}
+
 /**
  * Um clipe. Pode ser MÍDIA (janela sobre um arquivo) ou TÍTULO (texto). O que
  * distingue é a presença de `path` (mídia) ou `title` (texto) — nunca os dois.
@@ -80,6 +115,25 @@ export interface Clip {
   /* --- vídeo --- */
   /** Opacidade 0..1 pra overlay/título. `undefined` = 1 (opaco). */
   opacity?: number;
+
+  /* --- filtros por clipe (v0.3) --- */
+  /** Recorte do frame-fonte (frações 0..1). Ausente = usa o quadro inteiro. */
+  crop?: CropRect;
+  /** Posição+tamanho do overlay (PiP). Ausente = cobre o quadro (v0.2). */
+  transform?: Transform;
+  /** Brilho/contraste/saturação. Ausente = sem ajuste. */
+  color?: ColorAdjust;
+
+  /* --- velocidade (v0.3) --- */
+  /** Fator de velocidade. 1 = normal, 2 = 2× (mais curto), 0.5 = câmera lenta.
+   *  Invariante: a FONTE consumida = `durationMs * speed`. `undefined` = 1. */
+  speed?: number;
+
+  /* --- envelopes/keyframes (v0.3) --- */
+  /** Envelope de opacidade ao longo do clipe. Ausente = usa `opacity` constante. */
+  opacityKeyframes?: Keyframe[];
+  /** Envelope de volume ao longo do clipe. Ausente = usa `volume` constante. */
+  volumeKeyframes?: Keyframe[];
 }
 
 /** Uma trilha: clipes ORDENADOS por `startMs`. Vídeo empilha (overlay/z-order);
@@ -133,9 +187,24 @@ export function clipEnd(c: Clip): number {
   return c.startMs + clipDuration(c);
 }
 
-/** Fim da janela-fonte (só faz sentido em mídia). */
+/** Velocidade efetiva (grampeada em positivo; `undefined` = 1). É o fator que
+ *  liga tempo de timeline a tempo-fonte: 1 ms de timeline consome `speed` ms de
+ *  fonte. Um único ponto de verdade pra toda a matemática de corte não esquecer
+ *  a velocidade. */
+export function clipSpeed(c: Clip): number {
+  const s = c.speed ?? 1;
+  return s > 0 ? s : 1;
+}
+
+/** Quanto de FONTE o clipe consome, em ms (a janela-fonte). Com velocidade, é
+ *  `durationMs * speed` — 2× consome o dobro de fonte no mesmo tempo de tela. */
+export function srcWindowMs(c: Clip): number {
+  return clipDuration(c) * clipSpeed(c);
+}
+
+/** Fim da janela-fonte (só faz sentido em mídia). Considera a velocidade. */
 export function srcOut(c: Clip): number {
-  return (c.srcIn ?? 0) + clipDuration(c);
+  return (c.srcIn ?? 0) + srcWindowMs(c);
 }
 
 /** Fim da trilha = maior `clipEnd`. Trilha vazia = 0. */
@@ -204,7 +273,13 @@ export function timeToClip(track: Track | null, t: number): Hit | null {
     const d = clipDuration(c);
     if (d === 0 || !isMedia(c)) continue;
     if (t >= c.startMs && t < clipEnd(c)) {
-      best = { clip: c, index: i, srcTime: (c.srcIn ?? 0) + (t - c.startMs), clipStart: c.startMs };
+      // Tempo-fonte anda `speed` vezes mais rápido que o tempo de timeline.
+      best = {
+        clip: c,
+        index: i,
+        srcTime: (c.srcIn ?? 0) + (t - c.startMs) * clipSpeed(c),
+        clipStart: c.startMs,
+      };
     }
   }
   return best;
@@ -352,8 +427,9 @@ export function splitAt(tl: Timeline, id: string, at: number): Timeline {
     id: newId(),
     startMs: at,
     durationMs: clipDuration(clip) - leftDur,
-    // Mídia: a metade da direita começa mais adiante no arquivo-fonte.
-    ...(isMedia(clip) ? { srcIn: (clip.srcIn ?? 0) + leftDur } : {}),
+    // Mídia: a metade da direita começa mais adiante no arquivo-fonte — e com
+    // velocidade, o avanço na fonte é `leftDur * speed` (não `leftDur`).
+    ...(isMedia(clip) ? { srcIn: (clip.srcIn ?? 0) + leftDur * clipSpeed(clip) } : {}),
   };
   const clips = tl.tracks[ti].clips.slice();
   clips.splice(loc.ci, 1, left, right);
@@ -384,12 +460,16 @@ export function setClipEdge(
   const { clip, ti } = loc;
   const end = clipEnd(clip);
   const media = isMedia(clip);
+  // Com velocidade, 1 ms de borda anda `speed` ms na fonte — os limites de fonte
+  // (srcIn≥0, srcOut≤arquivo) viram limites de tempo de timeline dividindo por
+  // `speed`.
+  const sp = clipSpeed(clip);
   let next: Clip;
 
   if (edge === "in") {
     // A borda esquerda não pode passar da direita (mínimo 1 ms de clipe) nem
     // fazer o `srcIn` ficar negativo.
-    const minStart = media ? clip.startMs - (clip.srcIn ?? 0) : 0;
+    const minStart = media ? clip.startMs - (clip.srcIn ?? 0) / sp : 0;
     const newStart = Math.round(Math.max(minStart, Math.min(timelineMs, end - 1)));
     const delta = newStart - clip.startMs;
     if (delta === 0) return tl;
@@ -397,13 +477,13 @@ export function setClipEdge(
       ...clip,
       startMs: newStart,
       durationMs: clipDuration(clip) - delta,
-      ...(media ? { srcIn: (clip.srcIn ?? 0) + delta } : {}),
+      ...(media ? { srcIn: Math.max(0, Math.round((clip.srcIn ?? 0) + delta * sp)) } : {}),
     };
   } else {
     // A borda direita não pode passar do começo nem do fim do arquivo.
     let newEnd = Math.round(Math.max(clip.startMs + 1, timelineMs));
     if (media && srcLimit !== undefined) {
-      const maxEnd = clip.startMs + (srcLimit - (clip.srcIn ?? 0));
+      const maxEnd = clip.startMs + (srcLimit - (clip.srcIn ?? 0)) / sp;
       newEnd = Math.min(newEnd, maxEnd);
     }
     const newDur = newEnd - clip.startMs;
@@ -460,7 +540,7 @@ export function removeClip(tl: Timeline, id: string): Timeline {
  * Não mexe em posição/duração — pra isso há `moveClip`/`setClipEdge`. Ignora
  * chaves `undefined` pra não apagar o que não veio.
  */
-export function updateClip(tl: Timeline, id: string, patch: Partial<Clip>): Timeline {
+export function updateClip(tl: Timeline, id: string, patch: ClipPatch): Timeline {
   const loc = locate(tl, id);
   if (!loc) return tl;
   const next: Clip = { ...loc.clip };
@@ -468,6 +548,15 @@ export function updateClip(tl: Timeline, id: string, patch: Partial<Clip>): Time
   let changed = false;
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
+    // `null` REMOVE a propriedade — é como o inspetor zera um filtro (voltar a
+    // "sem recorte", "sem cor"). Sem isto, um filtro aplicado nunca some de vez.
+    if (v === null) {
+      if (k in rec) {
+        delete rec[k];
+        changed = true;
+      }
+      continue;
+    }
     if (rec[k] !== v) {
       rec[k] = v;
       changed = true;
@@ -477,6 +566,44 @@ export function updateClip(tl: Timeline, id: string, patch: Partial<Clip>): Time
   const clips = loc.track.clips.slice();
   clips[loc.ci] = next;
   return withTrack(tl, loc.ti, clips);
+}
+
+/** Patch aceito por `updateClip`: além de trocar valores, `null` REMOVE a chave
+ *  (zerar um filtro). Objetos aninhados (crop/color/…) entram inteiros. */
+export type ClipPatch = { [K in keyof Clip]?: Clip[K] | null };
+
+/**
+ * Muda a VELOCIDADE de um clipe de mídia. É a operação mais delicada da v0.3: a
+ * janela-fonte é PRESERVADA (o mesmo conteúdo do arquivo), mas a duração NA
+ * TIMELINE muda (2× encurta pela metade, ½× dobra). E aí vem o gotcha: mudar a
+ * duração deste clipe move o começo de TODOS os que vinham depois na mesma
+ * trilha — senão abre um buraco (ou uma sobreposição) que ninguém pediu. Por
+ * isso os vizinhos à frente andam junto, pelo delta da duração.
+ *
+ * Título não tem velocidade (não é mídia): é não-evento.
+ */
+export function setClipSpeed(tl: Timeline, id: string, speed: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const { clip, track, ti } = loc;
+  if (!isMedia(clip)) return tl;
+  // 0.25..4: fora disso o `atempo` do áudio precisaria de correntes longas e o
+  // resultado deixa de ser útil (fica irreconhecível). É a faixa dos NLEs.
+  const sp = Math.max(0.25, Math.min(4, speed));
+  const oldDur = clipDuration(clip);
+  // A fonte consumida (invariante) vem da velocidade ATUAL, não da nova.
+  const srcWin = oldDur * clipSpeed(clip);
+  const newDur = Math.max(1, Math.round(srcWin / sp));
+  if (newDur === oldDur && clipSpeed(clip) === sp) return tl;
+  const delta = newDur - oldDur;
+  const oldEnd = clipEnd(clip);
+  const clips = track.clips.map((c) => {
+    if (c.id === id) return { ...c, speed: sp, durationMs: newDur };
+    // Vizinhos que começavam em/depois do fim ANTIGO deste clipe andam junto.
+    if (c.startMs >= oldEnd) return { ...c, startMs: Math.max(0, c.startMs + delta) };
+    return c;
+  });
+  return withTrack(tl, ti, clips);
 }
 
 /**

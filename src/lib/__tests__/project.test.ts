@@ -49,6 +49,56 @@ describe(".tvproj v2", () => {
     expect(back.media["C:\\v1.mp4"].frameRate).toBe("30000/1001");
   });
 
+  it("guarda e reabre os filtros/velocidade/keyframes da v0.3 (ida e volta)", () => {
+    const v3: Timeline = {
+      version: 2,
+      tracks: [
+        {
+          id: "v1",
+          kind: "video",
+          clips: [
+            {
+              id: "a",
+              startMs: 0,
+              durationMs: 2000,
+              path: "C:\\v1.mp4",
+              srcIn: 0,
+              speed: 2,
+              crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 },
+              transform: { x: 0.6, y: 0.6, scale: 0.35 },
+              color: { brightness: 0.2, contrast: 1.3, saturation: 0.8 },
+              opacityKeyframes: [
+                { t: 0, v: 0 },
+                { t: 1, v: 1 },
+              ],
+              volumeKeyframes: [
+                { t: 0, v: 1 },
+                { t: 1, v: 0.5 },
+              ],
+            },
+          ],
+        },
+        { id: "a1", kind: "audio", clips: [] },
+      ],
+    };
+    const back = parseProject(serializeProject(v3, { "C:\\v1.mp4": info("C:\\v1.mp4") }));
+    // Nada se perde nem se distorce no disco.
+    expect(back.timeline).toEqual(v3);
+  });
+
+  it("ignora filtros malformados no disco (não abre pela metade com lixo)", () => {
+    const doc =
+      '{"app":"LocalVideo","version":2,"media":{},"tracks":[{"id":"v1","kind":"video","clips":[' +
+      '{"id":"a","startMs":0,"durationMs":1000,"path":"v.mp4","srcIn":0,"crop":{"x":"x"},"speed":-1,"opacityKeyframes":"nope"}]}]}';
+    const { timeline: tl } = parseProject(doc);
+    const c = tl.tracks[0].clips[0];
+    // Crop inválido, speed inválido e keyframes inválidos são descartados —
+    // o clipe abre sem eles, não quebra o projeto.
+    expect(c.crop).toBeUndefined();
+    expect(c.speed).toBeUndefined();
+    expect(c.opacityKeyframes).toBeUndefined();
+  });
+
   it("não guarda mídia órfã (arquivo sem clipe sai do projeto)", () => {
     const media = {
       "C:\\v1.mp4": info("C:\\v1.mp4"),

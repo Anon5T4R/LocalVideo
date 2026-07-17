@@ -26,13 +26,14 @@ import {
   removeClip,
   replacePresent,
   setClipEdge,
+  setClipSpeed,
   setTransition,
   splitAt,
   timelineDuration,
   timeToClip,
   undo,
   updateClip,
-  type Clip,
+  type ClipPatch,
   type History,
   type Timeline,
   type TitleProps,
@@ -92,8 +93,11 @@ interface EditorState {
   doMoveClip: (id: string, toTrackId: string, startMs: number) => void;
   /** Ajusta a transição (crossfade) entre este clipe e o seguinte. */
   doSetTransition: (id: string, transitionMs: number) => void;
-  /** Muda propriedades de um clipe (volume, fade, título, opacidade). */
-  doUpdateClip: (id: string, patch: Partial<Clip>) => void;
+  /** Muda propriedades de um clipe (volume, fade, título, opacidade, filtros).
+   *  `null` numa chave REMOVE aquela propriedade (zerar um filtro). */
+  doUpdateClip: (id: string, patch: ClipPatch) => void;
+  /** Muda a velocidade de um clipe (recalcula a posição dos vizinhos). */
+  doSetSpeed: (id: string, speed: number) => void;
   /** Cria um título na trilha base, no playhead. */
   doAddTitle: () => void;
   /** Acrescenta uma trilha (vídeo empilha; áudio mixa). */
@@ -298,6 +302,14 @@ export const useEditor = create<EditorState>((set, get) => ({
     const next = updateClip(history.present, id, patch);
     if (next === history.present) return;
     set({ history: pushHistory(history, next), dirty: true });
+  },
+
+  doSetSpeed: (id, speed) => {
+    const { history } = get();
+    const next = setClipSpeed(history.present, id, speed);
+    if (next === history.present) return;
+    set({ history: pushHistory(history, next), dirty: true });
+    clampPlayhead(set, get);
   },
 
   doAddTitle: () => {

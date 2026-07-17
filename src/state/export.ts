@@ -7,12 +7,14 @@ import {
   concatListBody,
   degenerateClips,
   encodeArgs,
+  EXPORT_PRESETS,
   filterComplexArgs,
   keyframeProbeArgs,
   parseKeyframesCsv,
   planExport,
   type ExportClip,
   type ExportPlan,
+  type ExportPresetId,
   type SourceInfo,
 } from "../lib/args";
 import { t } from "../lib/i18n";
@@ -57,6 +59,8 @@ interface ExportState {
   useCompiler: boolean;
   snap: boolean;
   snapWouldHelp: boolean;
+  /** Preset de export escolhido (resolução/codec/qualidade). "source" = padrão. */
+  preset: ExportPresetId;
   outPath: string | null;
   progress: ExportProgress;
   result: { path: string; plan: ExportPlan | null; compiled: boolean; elapsedMs: number } | null;
@@ -64,6 +68,7 @@ interface ExportState {
   openDialog: () => Promise<void>;
   close: () => void;
   setSnap: (v: boolean) => void;
+  setPreset: (id: ExportPresetId) => void;
   setOutPath: (p: string) => void;
   run: () => Promise<void>;
   cancel: () => void;
@@ -82,6 +87,7 @@ export const useExport = create<ExportState>((set, get) => ({
   useCompiler: false,
   snap: false,
   snapWouldHelp: false,
+  preset: "source",
   outPath: null,
   progress: ZERO,
   result: null,
@@ -96,44 +102,28 @@ export const useExport = create<ExportState>((set, get) => ({
     // A timeline cabe no `-c copy` instantâneo? (1 trilha, em fila, sem v0.2)
     const flat = degenerateClips(tl);
 
-    if (!flat) {
-      // Compilador: nada de sondar quadro-chave (ele recodifica de qualquer jeito).
-      if (!get().open) return;
-      set({
-        useCompiler: true,
-        plan: { kind: "encode", clips: [], reason: { code: "encode-multitrack" } },
-        snapWouldHelp: false,
-        phase: "ready",
-        outPath: get().outPath ?? (await defaultOut(firstPath(tl))),
-      });
-      return;
-    }
-
-    // Caminho degenerado: sonda de quadros-chave (um ffprobe por ARQUIVO).
-    const paths = [...new Set(flat.map((c) => c.path))];
-    const kf: Record<string, number[]> = { ...get().keyframes };
-    for (const p of paths) {
-      if (kf[p]) continue;
-      try {
-        const csv = await invoke<string>("probe_keyframes", { args: keyframeProbeArgs(p) });
-        kf[p] = parseKeyframesCsv(csv);
-      } catch {
-        kf[p] = [];
+    // Sonda de quadros-chave só serve pro caminho `-c copy` (preset "source" +
+    // degenerada). Mesmo assim sondamos aqui (barato, cacheado) pra alternar
+    // entre presets sem re-sondar; se não for degenerada, não há o que sondar.
+    if (flat) {
+      const paths = [...new Set(flat.map((c) => c.path))];
+      const kf: Record<string, number[]> = { ...get().keyframes };
+      for (const p of paths) {
+        if (kf[p]) continue;
+        try {
+          const csv = await invoke<string>("probe_keyframes", { args: keyframeProbeArgs(p) });
+          kf[p] = parseKeyframesCsv(csv);
+        } catch {
+          kf[p] = [];
+        }
       }
+      if (!get().open) return;
+      set({ keyframes: kf });
     }
     if (!get().open) return;
 
-    const sources = buildSources(kf);
-    const plan = planExport(flat, sources, { snap: get().snap });
-    const snapped = planExport(flat, sources, { snap: true });
-    set({
-      keyframes: kf,
-      useCompiler: false,
-      plan,
-      snapWouldHelp: plan.kind === "encode" && snapped.kind === "copy",
-      phase: "ready",
-      outPath: get().outPath ?? (await defaultOut(flat[0].path)),
-    });
+    set({ outPath: get().outPath ?? (await defaultOut(firstPath(tl))) });
+    replan(set, get);
   },
 
   close: () => {
@@ -143,11 +133,12 @@ export const useExport = create<ExportState>((set, get) => ({
 
   setSnap: (snap) => {
     set({ snap });
-    if (get().useCompiler) return;
-    const flat = degenerateClips(useEditor.getState().history.present);
-    if (!flat) return;
-    const sources = buildSources(get().keyframes);
-    set({ plan: planExport(flat, sources, { snap }) });
+    replan(set, get);
+  },
+
+  setPreset: (preset) => {
+    set({ preset });
+    replan(set, get);
   },
 
   setOutPath: (outPath) => set({ outPath }),
@@ -205,6 +196,46 @@ function isRunning(p: Phase): boolean {
 }
 
 type Set = (partial: Partial<ExportState>) => void;
+type Get = () => ExportState;
+
+/**
+ * Recalcula o plano a partir do preset e do snap atuais. Um só lugar decide o
+ * caminho: preset que recodifica → compilador (com o preset); senão, a lógica da
+ * v0.2 (degenerada → planExport copy/encode; multitrilha → compilador).
+ */
+function replan(set: Set, get: Get): void {
+  const tl = useEditor.getState().history.present;
+  const preset = EXPORT_PRESETS[get().preset];
+  const flat = degenerateClips(tl);
+
+  if (preset.reencode) {
+    set({
+      useCompiler: true,
+      plan: { kind: "encode", clips: [], reason: { code: "encode-preset", preset: preset.id } },
+      snapWouldHelp: false,
+      phase: "ready",
+    });
+    return;
+  }
+  if (!flat) {
+    set({
+      useCompiler: true,
+      plan: { kind: "encode", clips: [], reason: { code: "encode-multitrack" } },
+      snapWouldHelp: false,
+      phase: "ready",
+    });
+    return;
+  }
+  const sources = buildSources(get().keyframes);
+  const plan = planExport(flat, sources, { snap: get().snap });
+  const snapped = planExport(flat, sources, { snap: true });
+  set({
+    useCompiler: false,
+    plan,
+    snapWouldHelp: plan.kind === "encode" && snapped.kind === "copy",
+    phase: "ready",
+  });
+}
 
 /** Caminho `-c copy`: o concat demuxer corta e cola numa passada só. */
 async function runCopy(
@@ -230,13 +261,15 @@ async function runEncode(plan: ExportPlan, out: string, totalMs: number, set: Se
   await runJob(encodeArgs(plan.clips, sources, out, {}), totalMs, 0, 1, set);
 }
 
-/** Caminho do COMPILADOR da v0.2: a timeline inteira vira um grafo. */
+/** Caminho do COMPILADOR da v0.2/v0.3: a timeline inteira vira um grafo, e o
+ *  preset crava resolução/codec/qualidade da saída. */
 async function runCompile(out: string, totalMs: number, set: Set): Promise<void> {
   set({ phase: "encoding" });
   const ed = useEditor.getState();
   const sources = buildSources(useExport.getState().keyframes);
   const args = filterComplexArgs(ed.history.present, sources, out, {
     fontPath: ed.fontPath ?? undefined,
+    exportPreset: EXPORT_PRESETS[useExport.getState().preset],
   });
   await runJob(args, totalMs, 0, 1, set);
 }

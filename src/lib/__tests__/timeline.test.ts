@@ -9,6 +9,7 @@ import {
   canUndo,
   clipEnd,
   clipCount,
+  clipSpeed,
   defaultTitle,
   endHit,
   initHistory,
@@ -21,9 +22,11 @@ import {
   removeClip,
   replacePresent,
   setClipEdge,
+  setClipSpeed,
   setTransition,
   splitAt,
   srcOut,
+  srcWindowMs,
   timelineDuration,
   timeToClip,
   trackEnd,
@@ -256,6 +259,66 @@ describe("removeClip / updateClip / setTransition", () => {
     // a dura 1000; pedir 5000 de transição só encosta até 1000.
     const t = setTransition(base(), "a", 5000);
     expect(overlapWithNext(t.tracks[0], 0)).toBe(1000);
+  });
+});
+
+describe("velocidade (P3) — a conta que muda a duração", () => {
+  it("srcOut e srcWindow consideram a velocidade", () => {
+    // dur 2000 na timeline @ 2× consome 4000 de fonte.
+    const c: Clip = { id: "x", startMs: 0, durationMs: 2000, path: "a.mp4", srcIn: 1000, speed: 2 };
+    expect(clipSpeed(c)).toBe(2);
+    expect(srcWindowMs(c)).toBe(4000);
+    expect(srcOut(c)).toBe(5000);
+  });
+
+  it("setClipSpeed preserva a fonte e encurta a timeline (2× = metade)", () => {
+    // a=[0,1000) fonte[0,1000); b=[1000,2000) fonte[5000,7000); c=[3000,6000).
+    // Acelera o b em 2×: fonte preservada (2000 ms), dur vira 1000, e o vizinho c
+    // (que começava no fim de b, 3000) anda −1000.
+    const t = setClipSpeed(base(), "b", 2);
+    const track = t.tracks[0];
+    const b = track.clips.find((x) => x.id === "b")!;
+    expect(b.speed).toBe(2);
+    expect(b.durationMs).toBe(1000);
+    expect(srcOut(b)).toBe(7000); // fonte [5000,7000) intacta
+    // c reposicionado: começava em 3000, delta −1000 → 2000.
+    expect(track.clips.find((x) => x.id === "c")!.startMs).toBe(2000);
+  });
+
+  it("setClipSpeed câmera lenta (½×) dobra a duração e empurra o vizinho", () => {
+    const t = setClipSpeed(base(), "b", 0.5);
+    const b = t.tracks[0].clips.find((x) => x.id === "b")!;
+    expect(b.durationMs).toBe(4000); // 2000 de fonte / 0.5
+    expect(srcOut(b)).toBe(7000);
+    // c começava em 3000; delta +2000 → 5000.
+    expect(t.tracks[0].clips.find((x) => x.id === "c")!.startMs).toBe(5000);
+  });
+
+  it("velocidade é grampeada em 0.25..4 e título não tem velocidade", () => {
+    const t = setClipSpeed(base(), "b", 99);
+    expect(t.tracks[0].clips.find((x) => x.id === "b")!.speed).toBe(4);
+    // Título: não-evento.
+    let tt = newTimeline();
+    const vid = baseVideoTrack(tt)!.id;
+    tt = addTitle(tt, vid, 0, 1000, defaultTitle("T"));
+    const id = baseVideoTrack(tt)!.clips[0].id;
+    expect(setClipSpeed(tt, id, 2)).toBe(tt);
+  });
+
+  it("splitAt de um clipe acelerado divide a fonte proporcional à velocidade", () => {
+    // clipe @2×: dur 2000 (fonte 4000). Corta em 1000 (metade da timeline) →
+    // a direita começa 2000 adiante na fonte (1000 de timeline × 2).
+    const t0 = tl([vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: "a.mp4", srcIn: 0, speed: 2 }])]);
+    const t = splitAt(t0, "a", 1000);
+    const [left, right] = t.tracks[0].clips;
+    expect([left.durationMs, left.srcIn, left.speed]).toEqual([1000, 0, 2]);
+    expect([right.durationMs, right.srcIn, right.speed]).toEqual([1000, 2000, 2]);
+  });
+
+  it("timeToClip mapeia tempo-fonte pela velocidade", () => {
+    const t = tl([vtrack([{ id: "a", startMs: 1000, durationMs: 2000, path: "a.mp4", srcIn: 500, speed: 2 }])]);
+    // 500 ms depois do início na timeline → 1000 ms na fonte, a partir de 500.
+    expect(timeToClip(t.tracks[0], 1500)?.srcTime).toBe(1500);
   });
 });
 

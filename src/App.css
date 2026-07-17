@@ -916,6 +916,55 @@ kbd {
   margin-top: 4px;
 }
 
+/* ---------- inspetor v0.3: seções, velocidade, keyframes ---------- */
+/* Cabeçalho de seção com botão "restaurar" à direita. */
+.inspector .sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+/* Botão pequeno (restaurar filtro, remover ponto). */
+.inspector .mini {
+  font-size: 12px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+/* Segmentos de velocidade (0.25×…4×). */
+.inspector .seg {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.inspector .seg button {
+  flex: 1;
+  min-width: 38px;
+  padding: 4px 0;
+}
+.inspector .seg button.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+/* Lista de keyframes. */
+.inspector .kf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 6px;
+  border-left: 2px solid var(--border);
+}
+.inspector .kf-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.inspector .kf-row input[type="number"] {
+  width: 56px;
+}
+
 /* ---------- modal / toasts ---------- */
 .modal-backdrop {
   position: fixed;

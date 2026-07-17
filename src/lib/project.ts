@@ -18,11 +18,15 @@
 import {
   TIMELINE_VERSION,
   type Clip,
+  type ColorAdjust,
+  type CropRect,
+  type Keyframe,
   type Timeline,
   type TitleAnchor,
   type TitleProps,
   type Track,
   type TrackKind,
+  type Transform,
 } from "./timeline";
 import type { RawMediaInfo } from "./probe";
 
@@ -174,7 +178,57 @@ function parseClip(raw: unknown): Clip {
   if (Number.isFinite(c.fadeInMs)) base.fadeInMs = Math.max(0, Math.round(c.fadeInMs as number));
   if (Number.isFinite(c.fadeOutMs)) base.fadeOutMs = Math.max(0, Math.round(c.fadeOutMs as number));
   if (Number.isFinite(c.opacity)) base.opacity = c.opacity as number;
+  // v0.3: filtros/velocidade/envelopes. Cada um é parseado com desconfiança (o
+  // arquivo veio do disco), e só entra se tiver a forma certa.
+  const crop = parseCrop(c.crop);
+  if (crop) base.crop = crop;
+  const transform = parseTransform(c.transform);
+  if (transform) base.transform = transform;
+  const color = parseColor(c.color);
+  if (color) base.color = color;
+  if (Number.isFinite(c.speed) && (c.speed as number) > 0) base.speed = c.speed as number;
+  const opKf = parseKeyframes(c.opacityKeyframes);
+  if (opKf) base.opacityKeyframes = opKf;
+  const volKf = parseKeyframes(c.volumeKeyframes);
+  if (volKf) base.volumeKeyframes = volKf;
   return base;
+}
+
+function num(v: unknown, dflt: number): number {
+  return Number.isFinite(v) ? (v as number) : dflt;
+}
+
+function parseCrop(raw: unknown): CropRect | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (![r.x, r.y, r.w, r.h].every(Number.isFinite)) return undefined;
+  return { x: num(r.x, 0), y: num(r.y, 0), w: num(r.w, 1), h: num(r.h, 1) };
+}
+
+function parseTransform(raw: unknown): Transform | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (![r.x, r.y, r.scale].every(Number.isFinite)) return undefined;
+  return { x: num(r.x, 0), y: num(r.y, 0), scale: num(r.scale, 1) };
+}
+
+function parseColor(raw: unknown): ColorAdjust | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (![r.brightness, r.contrast, r.saturation].every(Number.isFinite)) return undefined;
+  return { brightness: num(r.brightness, 0), contrast: num(r.contrast, 1), saturation: num(r.saturation, 1) };
+}
+
+function parseKeyframes(raw: unknown): Keyframe[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: Keyframe[] = [];
+  for (const p of raw) {
+    if (p && typeof p === "object") {
+      const o = p as Record<string, unknown>;
+      if (Number.isFinite(o.t) && Number.isFinite(o.v)) out.push({ t: o.t as number, v: o.v as number });
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function parseTitle(t: Record<string, unknown>): TitleProps {

@@ -1,28 +1,42 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { colorToCanvasFilter, layersAt, needsComposite, type MediaLayer } from "../lib/compose";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
 import { formatDuration, formatTimecode } from "../lib/probe";
-import { baseVideoTrack, endHit, isMedia, srcOut, timelineDuration, timeToClip } from "../lib/timeline";
+import {
+  baseVideoTrack,
+  clipEnd,
+  endHit,
+  isMedia,
+  srcOut,
+  timelineDuration,
+  timeToClip,
+  type Clip,
+} from "../lib/timeline";
 import { useEditor } from "../state/editor";
 
 /**
- * Prévia da timeline montada.
+ * Prévia da timeline montada — **WYSIWYG na v0.3**.
  *
- * **Dois motores, cada um no que sabe fazer:**
+ * ─── Três modos, cada um honesto sobre o que é ───────────────────────────────
  *
- * - O `<video>` é dono do PLAY: ele traz áudio e ritmo de graça, e ninguém
- *   reescreve um sincronizador de A/V por diversão.
- * - O `VideoDecoder` (canvas por cima) é dono do PARADO: quando o playhead para,
- *   o quadro exato é decodificado na mão e pintado. É o que faz a seta andar UM
- *   quadro — o `<video>` mostra "por perto", e "por perto" num editor é o que
- *   faz o usuário desconfiar do corte que acabou de fazer.
+ * 1. **PARADO, composição fiel** (o novo da v0.3): o playhead para e a gente
+ *    COMPÕE a timeline no canvas — trilhas empilhadas, PiP posicionado, recorte,
+ *    opacidade/keyframes, crossfade dissolvendo e o título desenhado como TEXTO
+ *    no canvas (não chamando ffmpeg). O que aparece é o que exporta.
+ * 2. **PARADO, base só**: sem composição (uma trilha, sem filtro) → o quadro
+ *    exato da trilha base, quadro a quadro, como na v0.2.
+ * 3. **TOCANDO**: quem manda é o `<video>` (traz áudio e ritmo). Compor N fontes
+ *    a 30 fps ao vivo seria decodificar vários filmes ao mesmo tempo — caro e
+ *    frágil. Então durante o play mostra a base e AVISA "pause pra ver a
+ *    composição". Nunca finge que o play é a composição.
  *
- * **Degradar dizendo a verdade** (`preview.rough*`): sem `VideoDecoder`, ou num
- * container que o demuxer não abre (mkv/webm/avi — ver `lib/decoder.ts`), fica
- * só o `<video>` e a UI **avisa que a prévia é aproximada**. Prometer precisão
- * que não se tem é pior do que não ter.
+ * **Degradar dizendo a verdade** (o selo): container que o demuxer não abre
+ * (mkv/webm/avi) não dá pra compor no canvas → aviso de prévia aproximada. E o
+ * ajuste de COR é aproximado no canvas (brilho aditivo vs multiplicativo) — o
+ * selo diz isso também. Prometer fidelidade que não se tem é pior que não ter.
  */
 export default function Preview() {
   const timeline = useEditor((s) => s.history.present);
@@ -41,33 +55,43 @@ export default function Preview() {
   /** O canvas tem um quadro pintado e válido pro playhead de agora? */
   const [painted, setPainted] = useState(false);
 
-  // A prévia mostra a TRILHA BASE (a primeira de vídeo). A composição completa
-  // (overlays, títulos, crossfades) aparece na EXPORTAÇÃO — o rodapé avisa isso
-  // quando há mais de uma trilha. Compor tudo ao vivo por WebCodecs fica pra v0.3.
   const track = useMemo(() => baseVideoTrack(timeline), [timeline]);
   const total = useMemo(() => timelineDuration(timeline), [timeline]);
-  const multitrack = useMemo(
-    () => timeline.tracks.filter((t) => t.clips.length > 0).length > 1
-      || timeline.tracks.some((t) => t.clips.some((c) => !isMedia(c))),
-    [timeline],
-  );
-  // No fim exato (`playhead === total`) o `timeToClip` devolve null — e é o
-  // certo: o filme acabou. Mas é onde o play para; pra não mostrar "importe um
-  // vídeo" com a timeline cheia, o fim gruda no último quadro (ver `endHit`).
-  const hit = useMemo(
+
+  // A trilha BASE ainda comanda o `<video>` (play + áudio) e o caminho simples.
+  const baseHit = useMemo(
     () => timeToClip(track, playhead) ?? (playhead >= total ? endHit(track) : null),
     [track, playhead, total],
   );
-  // `hit` só vem de clipe de MÍDIA (o `timeToClip` filtra), então `path` existe.
-  const hitPath = hit?.clip.path ?? "";
-  const gone = hit ? missing.includes(hitPath) : false;
-  const fps = hit ? (media[hitPath]?.fps ?? 30) : 30;
-  const exact = hit && !gone ? canDecodeExactly(hitPath) : false;
 
-  const src = hit && !gone ? convertFileSrc(hitPath) : "";
+  // As CAMADAS da composição no instante atual (no fim, gruda no último quadro).
+  const layerT = playhead >= total ? Math.max(0, total - 1) : playhead;
+  const layers = useMemo(() => layersAt(timeline, layerT), [timeline, layerT]);
+  const composite = needsComposite(layers);
 
-  // Fecha os decodificadores dos arquivos que saíram da timeline. `VideoFrame` e
-  // `VideoDecoder` seguram memória de VÍDEO, fora do alcance do coletor de lixo.
+  // Resolução de saída = a do 1º clipe de mídia de vídeo (é "o vídeo" pro
+  // usuário). O canvas é pintado nesse tamanho e o CSS encaixa na tela.
+  const dims = useMemo(() => targetDims(timeline, media), [timeline, media]);
+
+  // Dá pra compor no canvas? (todos os arquivos ativos são decodificáveis exato)
+  const mediaLayers = layers.filter((l): l is MediaLayer => l.kind === "media");
+  const allDecodable =
+    hasWebCodecs() && mediaLayers.every((l) => !missing.includes(l.clip.path!) && canDecodeExactly(l.clip.path!));
+
+  // `hit` do <video>: só vem de clipe de MÍDIA (o `timeToClip` filtra).
+  const hitPath = baseHit?.clip.path ?? "";
+  const gone = baseHit ? missing.includes(hitPath) : false;
+  const fps = baseHit ? (media[hitPath]?.fps ?? 30) : 30;
+  const baseExact = baseHit && !gone ? canDecodeExactly(hitPath) : false;
+  const src = baseHit && !gone ? convertFileSrc(hitPath) : "";
+
+  // Modo de pintura do canvas quando PARADO:
+  //  - compor (várias camadas/filtros) se der pra decodificar tudo;
+  //  - senão, o quadro exato da base (caminho da v0.2).
+  const doComposite = !playing && layers.length > 0 && composite && allDecodable;
+
+  // Fecha os decodificadores dos arquivos que saíram da timeline (memória de
+  // vídeo fora do alcance do GC).
   useEffect(() => {
     const alive = new Set(
       timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!)),
@@ -88,35 +112,94 @@ export default function Preview() {
     };
   }, []);
 
-  /* ---------- o quadro exato (parado) ---------- */
+  /** Pega (ou abre) o decodificador de um arquivo. */
+  const sourceFor = (path: string): FrameSource => {
+    let fs = sources.current.get(path);
+    if (!fs) {
+      fs = new FrameSource(convertFileSrc(path));
+      sources.current.set(path, fs);
+    }
+    return fs;
+  };
+
+  /* ---------- COMPOSIÇÃO (parado, WYSIWYG) ---------- */
 
   useEffect(() => {
-    // Durante o play quem manda é o `<video>`: decodificar por fora seria
-    // desenhar um segundo filme, meio quadro atrás do primeiro.
-    if (!hit || gone || playing || !exact) {
-      setPainted(false);
+    if (!doComposite) return;
+    let dead = false;
+
+    void (async () => {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx) return;
+      canvas.width = dims.w;
+      canvas.height = dims.h;
+
+      // Decodifica os quadros das camadas de mídia ANTES de pintar, pra a tela
+      // não piscar meia-composição enquanto os arquivos respondem em ritmos
+      // diferentes. Título não decodifica — é texto.
+      const frames = new Map<string, VideoFrame | null>();
+      for (const l of layers) {
+        if (l.kind !== "media") continue;
+        try {
+          frames.set(l.clip.id, await sourceFor(l.clip.path!).frameAt(Math.round(l.srcTimeMs * 1000)));
+        } catch {
+          frames.set(l.clip.id, null);
+        }
+        if (dead) {
+          for (const f of frames.values()) f?.close();
+          return;
+        }
+      }
+
+      // Fundo preto (o buraco entre clipes é preto, como no export).
+      ctx.filter = "none";
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, dims.w, dims.h);
+
+      for (const l of layers) {
+        if (l.kind === "media") {
+          const frame = frames.get(l.clip.id) ?? null;
+          if (frame) {
+            drawMedia(ctx, frame, l.clip, dims.w, dims.h, l.alpha);
+            frame.close();
+          }
+        } else {
+          drawTitle(ctx, l.clip, dims.w, dims.h, l.alpha);
+        }
+      }
+      ctx.filter = "none";
+      ctx.globalAlpha = 1;
+      if (!dead) setPainted(true);
+    })();
+
+    return () => {
+      dead = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doComposite, layers, dims.w, dims.h]);
+
+  /* ---------- o quadro exato da BASE (parado, sem composição) ---------- */
+
+  useEffect(() => {
+    // Durante o play, ou quando a composição está no comando, este caminho cala.
+    if (!baseHit || gone || playing || !baseExact || doComposite) {
+      if (!doComposite) setPainted(false);
       return;
     }
 
     let dead = false;
-    const path = hit.clip.path!;
-    const targetUs = Math.round(hit.srcTime * 1000);
+    const path = baseHit.clip.path!;
+    const targetUs = Math.round(baseHit.srcTime * 1000);
 
     void (async () => {
-      let fs = sources.current.get(path);
-      if (!fs) {
-        fs = new FrameSource(convertFileSrc(path));
-        sources.current.set(path, fs);
-      }
       let frame: VideoFrame | null = null;
       try {
-        frame = await fs.frameAt(targetUs);
+        frame = await sourceFor(path).frameAt(targetUs);
       } catch {
-        // Arquivo que o demuxer não engoliu: o `<video>` continua ali embaixo e
-        // a UI já diz que a prévia é aproximada. Nada de erro na cara.
         frame = null;
       }
-      // O playhead andou enquanto isto decodificava: este quadro é passado.
       if (dead || !frame) {
         frame?.close();
         if (!dead) setPainted(false);
@@ -130,8 +213,9 @@ export default function Preview() {
       }
       canvas.width = frame.displayWidth;
       canvas.height = frame.displayHeight;
+      ctx.filter = "none";
+      ctx.globalAlpha = 1;
       ctx.drawImage(frame, 0, 0);
-      // Fechar SEMPRE, e logo depois de pintar: o pixel já está no canvas.
       frame.close();
       setPainted(true);
     })();
@@ -139,29 +223,28 @@ export default function Preview() {
     return () => {
       dead = true;
     };
-  }, [hit, gone, playing, exact]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseHit, gone, playing, baseExact, doComposite]);
 
   /* ---------- o play (o <video> manda) ---------- */
 
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || !hit || playing) return;
-    const want = hit.srcTime / 1000;
+    if (!v || !baseHit || playing) return;
+    const want = baseHit.srcTime / 1000;
     if (Math.abs(v.currentTime - want) > 0.02) v.currentTime = want;
-  }, [hit, playing]);
+  }, [baseHit, playing]);
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    // Ré (J) não é play: o `<video>` não toca pra trás. Quem anda é o playhead,
-    // no laço de rAF abaixo — e o vídeo fica parado, servindo de quadro.
     if (playing && !gone && rate > 0) {
       v.playbackRate = rate;
       void v.play().catch(() => setPlaying(false));
     } else {
       v.pause();
     }
-  }, [playing, gone, rate, hit?.clip.id, setPlaying]);
+  }, [playing, gone, rate, baseHit?.clip.id, setPlaying]);
 
   // A ré, na mão: o playhead recua no relógio de parede, na velocidade pedida.
   useEffect(() => {
@@ -185,17 +268,14 @@ export default function Preview() {
     return () => cancelAnimationFrame(raf);
   }, [playing, rate]);
 
-  // Durante o play, quem manda no playhead é o vídeo (o relógio real).
   const onTimeUpdate = () => {
     const v = videoRef.current;
-    if (!v || !hit || !playing || rate < 0) return;
+    if (!v || !baseHit || !playing || rate < 0) return;
     const srcMs = v.currentTime * 1000;
-    const clipIn = hit.clip.srcIn ?? 0;
-    const clipOut = srcOut(hit.clip);
-    // Passou do fim APARADO do clipe? Pula pra emenda seguinte — é o corte
-    // acontecendo na prévia, sem tocar em byte nenhum do arquivo.
+    const clipIn = baseHit.clip.srcIn ?? 0;
+    const clipOut = srcOut(baseHit.clip);
     if (srcMs >= clipOut - 1) {
-      const next = hit.clipStart + (clipOut - clipIn);
+      const next = clipEnd(baseHit.clip);
       if (next >= total) {
         setPlaying(false);
         seek(total);
@@ -204,19 +284,28 @@ export default function Preview() {
       }
       return;
     }
-    seek(hit.clipStart + (srcMs - clipIn));
+    // Com velocidade, o tempo de tela anda `1/speed` do tempo-fonte.
+    const sp = baseHit.clip.speed ?? 1;
+    seek(baseHit.clipStart + (srcMs - clipIn) / (sp > 0 ? sp : 1));
   };
 
   /** O rodapé conta o que a prévia É — e por que, quando é aproximada. */
-  const quality = !hit
-    ? ""
-    : multitrack
-      ? t("preview.multitrack")
-      : exact
-        ? t("preview.exact")
-        : !hasWebCodecs()
-          ? t("preview.roughNoCodecs")
-          : t("preview.roughContainer");
+  const quality = (() => {
+    if (!baseHit && layers.length === 0) return "";
+    if (playing) return composite ? t("preview.playApprox") : baseExact ? t("preview.exact") : rough();
+    // Parado:
+    if (composite) {
+      if (!allDecodable) return t("preview.roughContainer"); // não deu pra compor
+      return mediaLayers.some((l) => l.approx) ? t("preview.approx") : t("preview.wysiwyg");
+    }
+    return baseExact ? t("preview.exact") : rough();
+  })();
+
+  function rough() {
+    return !hasWebCodecs() ? t("preview.roughNoCodecs") : t("preview.roughContainer");
+  }
+
+  const showVideo = baseHit && !gone && !doComposite;
 
   return (
     <div className="card preview-card">
@@ -229,7 +318,7 @@ export default function Preview() {
       </div>
 
       <div className="stage">
-        {hit && !gone ? (
+        {baseHit && !gone ? (
           <>
             <video
               ref={videoRef}
@@ -238,9 +327,10 @@ export default function Preview() {
               onTimeUpdate={onTimeUpdate}
               onEnded={() => setPlaying(false)}
               preload="auto"
+              style={{ display: showVideo ? "block" : "none" }}
             />
-            {/* Por cima do <video>, e só quando há quadro exato pintado: assim a
-                troca entre parar e tocar não pisca preto. */}
+            {/* O canvas: composição (parado) ou quadro exato. Fica por cima do
+                <video> pra a troca parar↔tocar não piscar preto. */}
             <canvas
               ref={canvasRef}
               className="stage-canvas"
@@ -255,7 +345,7 @@ export default function Preview() {
       <div className="preview-bar">
         <button
           onClick={() => useEditor.getState().nudgeRate(-1)}
-          disabled={!hit || gone}
+          disabled={!baseHit || gone}
           title={t("sc.jkl")}
         >
           ◀◀ J
@@ -263,14 +353,14 @@ export default function Preview() {
         <button
           className="primary"
           onClick={() => setPlaying(!playing)}
-          disabled={!hit || gone}
+          disabled={!baseHit || gone}
           title={playing ? t("preview.pause") : t("preview.play")}
         >
           {playing ? "❚❚" : "▶"} {playing ? t("preview.pause") : t("preview.play")}
         </button>
         <button
           onClick={() => useEditor.getState().nudgeRate(1)}
-          disabled={!hit || gone}
+          disabled={!baseHit || gone}
           title={t("sc.jkl")}
         >
           L ▶▶
@@ -279,4 +369,102 @@ export default function Preview() {
       </div>
     </div>
   );
+}
+
+/** Resolução de saída da composição (a do 1º clipe de mídia de vídeo). */
+function targetDims(
+  tl: ReturnType<typeof useEditor.getState>["history"]["present"],
+  media: Record<string, { width: number; height: number }>,
+): { w: number; h: number } {
+  for (const tk of tl.tracks) {
+    if (tk.kind !== "video") continue;
+    for (const c of tk.clips) {
+      if (c.path && media[c.path]) return { w: media[c.path].width, h: media[c.path].height };
+    }
+  }
+  return { w: 1920, h: 1080 };
+}
+
+/**
+ * Desenha um clipe de mídia no canvas: recorte (crop) na fonte, PiP (posição +
+ * tamanho) OU encaixe no quadro com barra, opacidade e cor (aproximada). É o
+ * espelho do que o compilador faz no export.
+ */
+function drawMedia(
+  ctx: CanvasRenderingContext2D,
+  frame: VideoFrame,
+  clip: Clip,
+  W: number,
+  H: number,
+  alpha: number,
+): void {
+  const fw = frame.displayWidth;
+  const fh = frame.displayHeight;
+  // Recorte na fonte.
+  let sx = 0;
+  let sy = 0;
+  let sw = fw;
+  let sh = fh;
+  if (clip.crop) {
+    sx = clip.crop.x * fw;
+    sy = clip.crop.y * fh;
+    sw = Math.max(1, clip.crop.w * fw);
+    sh = Math.max(1, clip.crop.h * fh);
+  }
+  const aspect = sw / sh;
+
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.filter = clip.color ? colorToCanvasFilter(clip.color) : "none";
+
+  if (clip.transform) {
+    // PiP: largura = fração da saída; altura mantém o aspecto (como o scale=pw:-2).
+    const dw = clip.transform.scale * W;
+    const dh = dw / aspect;
+    const dx = clip.transform.x * W;
+    const dy = clip.transform.y * H;
+    ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+  } else {
+    // Quadro cheio, com barra (nunca esticado) — igual ao scale+pad do export.
+    const scale = Math.min(W / sw, H / sh);
+    const dw = sw * scale;
+    const dh = sh * scale;
+    ctx.drawImage(frame, sx, sy, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  }
+  ctx.globalAlpha = 1;
+  ctx.filter = "none";
+}
+
+/** Desenha um título como TEXTO no canvas (não chama ffmpeg na prévia). Espelha
+ *  o `drawtext`: centralizado em x, âncora em cima/meio/embaixo, borda preta. */
+function drawTitle(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  W: number,
+  H: number,
+  alpha: number,
+): void {
+  const tp = clip.title!;
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.filter = "none";
+  ctx.font = `${tp.fontSizePx}px sans-serif`;
+  ctx.textAlign = "center";
+  const x = W / 2;
+  let y: number;
+  if (tp.anchor === "top") {
+    ctx.textBaseline = "top";
+    y = H * 0.08;
+  } else if (tp.anchor === "center") {
+    ctx.textBaseline = "middle";
+    y = H / 2;
+  } else {
+    ctx.textBaseline = "alphabetic";
+    y = H - H * 0.08;
+  }
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(0,0,0,0.6)";
+  ctx.strokeText(tp.text, x, y);
+  ctx.fillStyle = tp.color;
+  ctx.fillText(tp.text, x, y);
+  ctx.globalAlpha = 1;
 }

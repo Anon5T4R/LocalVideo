@@ -22,6 +22,17 @@ if (import.meta.env.DEV && import.meta.env.VITE_SELFTEST) {
   );
 }
 
+// Ponte de automação — SÓ EM DEV. Expõe as stores no `window` pra dirigir a
+// prévia WYSIWYG por CDP sem passar pelo diálogo nativo de arquivo (montar uma
+// timeline com PiP/título/crossfade e olhar o canvas). Em produção o
+// `import.meta.env.DEV` é false e o bundler apaga este bloco — não vai um byte
+// pro instalador.
+if (import.meta.env.DEV) {
+  void Promise.all([import("./state/editor"), import("./state/export")]).then(([ed, ex]) => {
+    (window as unknown as Record<string, unknown>).__lv = { editor: ed.useEditor, export: ex.useExport };
+  });
+}
+
 // Remonta a árvore ao trocar de idioma (todo t() é reavaliado no novo locale).
 function Root() {
   const locale = useLocale();

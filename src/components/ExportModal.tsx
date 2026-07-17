@@ -1,6 +1,6 @@
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
-import type { PlanReason } from "../lib/args";
+import { type ExportPresetId, type PlanReason } from "../lib/args";
 import { t } from "../lib/i18n";
 import { formatDuration } from "../lib/probe";
 import { baseName } from "../state/editor";
@@ -41,6 +41,7 @@ export default function ExportModal() {
           <Done />
         ) : (
           <>
+            <PresetPicker />
             <PlanCard />
 
             <div className="field">
@@ -95,6 +96,31 @@ export default function ExportModal() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** O seletor de preset: nomes que a pessoa entende ("YouTube 1080p") em vez de
+ *  resolução/codec soltos. Muda o plano ao vivo (o cartão abaixo reage). */
+function PresetPicker() {
+  const ex = useExport();
+  const running = ex.phase === "cutting" || ex.phase === "joining" || ex.phase === "encoding";
+  const ids: ExportPresetId[] = ["source", "youtube1080", "vertical", "whatsapp", "quality"];
+  return (
+    <div className="field">
+      <label>{t("exp.presetLabel")}</label>
+      <select
+        value={ex.preset}
+        disabled={running}
+        onChange={(e) => ex.setPreset(e.target.value as ExportPresetId)}
+      >
+        {ids.map((id) => (
+          <option key={id} value={id}>
+            {t(`exp.preset.${id}` as "exp.preset.source")}
+          </option>
+        ))}
+      </select>
+      <p className="muted small">{t(`exp.presetHint.${ex.preset}` as "exp.presetHint.source")}</p>
     </div>
   );
 }
@@ -181,5 +207,7 @@ function reasonText(r: PlanReason): string {
       return t("exp.whyNoKeyframes", { name: baseName(r.path) });
     case "encode-multitrack":
       return t("exp.whyMultitrack");
+    case "encode-preset":
+      return t("exp.whyPreset", { preset: t(`exp.preset.${r.preset}` as "exp.preset.source") });
   }
 }

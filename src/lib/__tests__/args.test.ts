@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  atempoChain,
   concatArgs,
   concatListBody,
   degenerateClips,
   drawtextEscape,
   encodeArgs,
+  envelopeExpr,
+  EXPORT_PRESETS,
   filterComplexArgs,
   keyframeProbeArgs,
   nearestKeyframe,
@@ -563,5 +566,134 @@ describe("filterComplexArgs — o compilador", () => {
     expect(a[a.indexOf("-pix_fmt") + 1]).toBe("yuv420p");
     expect(a[a.indexOf("-movflags") + 1]).toBe("+faststart");
     expect(a[a.length - 1]).toBe("o.mp4");
+  });
+});
+
+/* ================================================================== */
+/* v0.3 — filtros por clipe, PiP, velocidade, keyframes, presets       */
+/* ================================================================== */
+
+describe("filtros por clipe (P2): crop, cor, PiP", () => {
+  it("crop entra como fração de iw/ih e força o encaixe depois", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 } }])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("crop=iw*0.5000:ih*0.6000:iw*0.1000:ih*0.2000");
+    // Depois do crop, o encaixe scale+pad roda (as dimensões mudaram).
+    expect(g).toContain("scale=640:480:force_original_aspect_ratio=decrease");
+  });
+
+  it("crop cheio (0,0,1,1) é ignorado — não mete filtro que não corta", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), crop: { x: 0, y: 0, w: 1, h: 1 } }])]);
+    expect(fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"))).not.toContain("crop=");
+  });
+
+  it("cor vira eq com brilho/contraste/saturação (neutro é ignorado)", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), color: { brightness: 0.2, contrast: 1.3, saturation: 0.8 } }])]);
+    expect(fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"))).toContain("eq=brightness=0.200:contrast=1.300:saturation=0.800");
+    const neutral = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), color: { brightness: 0, contrast: 1, saturation: 1 } }])]);
+    expect(fc(filterComplexArgs(neutral, { [A]: src() }, "o.mp4"))).not.toContain("eq=");
+  });
+
+  it("PiP (transform): escala pra fração da largura e overlay posicionado", () => {
+    const t = tl([
+      vtrack([mediaClip("a", 0, 4000, 0, A)]),
+      vtrack([{ ...mediaClip("b", 0, 4000, 0, B), transform: { x: 0.5, y: 0.25, scale: 0.4 } }], "v2"),
+    ]);
+    const g = fc(filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4"));
+    // 0.4 × 640 = 256 (par); altura automática (-2).
+    expect(g).toContain("scale=256:-2");
+    // Overlay em x=0.5*640=320, y=0.25*480=120.
+    expect(g).toContain("overlay=x=320:y=120:eof_action=pass");
+  });
+});
+
+describe("velocidade no compilador (P3): setpts + atempo", () => {
+  it("vídeo acelerado reescala o PTS; áudio ganha atempo", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), speed: 2 }])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    // 2× ⇒ setpts=0.5*PTS; e a janela-fonte é o dobro (2000×2=4000).
+    expect(g).toContain("setpts=0.500000*PTS");
+    expect(g).toContain("trim=start=0.000:end=4.000");
+    expect(g).toContain("atempo=2.000000");
+  });
+
+  it("atempoChain encadeia câmera lenta forte (0.25 = 0.5×0.5)", () => {
+    expect(atempoChain(0.25)).toEqual(["atempo=0.5", "atempo=0.500000"]);
+    expect(atempoChain(2)).toEqual(["atempo=2.000000"]);
+    expect(atempoChain(4)).toEqual(["atempo=2.0", "atempo=2.000000"]);
+    expect(atempoChain(1)).toEqual(["atempo=1.000000"]);
+  });
+});
+
+describe("keyframes no compilador (P4): opacidade (geq) e volume (expr)", () => {
+  it("envelope de opacidade vira geq no canal alfa", () => {
+    const kf = [
+      { t: 0, v: 0 },
+      { t: 1, v: 1 },
+    ];
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), opacityKeyframes: kf }])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("format=yuva420p");
+    expect(g).toContain("geq=lum='lum(X\\,Y)'");
+    expect(g).toContain("a='255*clip(");
+  });
+
+  it("envelope de volume vira volume=…:eval=frame", () => {
+    const kf = [
+      { t: 0, v: 0 },
+      { t: 1, v: 1 },
+    ];
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), volumeKeyframes: kf }])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("volume=volume='");
+    expect(g).toContain("':eval=frame");
+  });
+
+  it("envelopeExpr interpola linear e prende nas pontas", () => {
+    const e = envelopeExpr([{ t: 0, v: 0 }, { t: 1, v: 1 }], 2, "T");
+    // Antes do 1º ponto (t=0s) vale 0; depois do último (t=2s) vale 1; no meio interpola.
+    expect(e).toContain("if(lt(T\\,0.0000)");
+    expect(e).toContain("if(lt(T\\,2.0000)");
+  });
+});
+
+describe("presets de export (P5)", () => {
+  it("preset vertical crava 1080×1920 no fundo e no encaixe", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000, 0, A)])]);
+    const a = filterComplexArgs(t, { [A]: src() }, "o.mp4", { exportPreset: EXPORT_PRESETS.vertical });
+    const g = fc(a);
+    expect(g).toContain("color=c=black:s=1080x1920");
+    // O clipe 640×480 entra com barra (scale+pad pro alvo vertical).
+    expect(g).toContain("scale=1080:1920:force_original_aspect_ratio=decrease");
+    // CRF/áudio do preset.
+    expect(a[a.indexOf("-crf") + 1]).toBe("21");
+    expect(a[a.indexOf("-b:a") + 1]).toBe("160k");
+  });
+
+  it("preset youtube1080 crava 1920×1080", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000, 0, A)])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4", { exportPreset: EXPORT_PRESETS.youtube1080 }));
+    expect(g).toContain("color=c=black:s=1920x1080");
+  });
+
+  it("preset whatsapp mantém a resolução mas com CRF alto e fps 30", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000, 0, A)])]);
+    const a = filterComplexArgs(t, { [A]: src({ fps: 60 }) }, "o.mp4", { exportPreset: EXPORT_PRESETS.whatsapp });
+    expect(fc(a)).toContain("color=c=black:s=640x480:r=30"); // fps cravado em 30
+    expect(a[a.indexOf("-crf") + 1]).toBe("30");
+  });
+});
+
+describe("degenerateClips rejeita os recursos da v0.3", () => {
+  it("crop/transform/cor/velocidade/keyframes tiram do -c copy", () => {
+    const mk = (over: Partial<Clip>) => tl([vtrack([{ ...mediaClip("a", 0, 1000, 0, A), ...over }])]);
+    expect(degenerateClips(mk({ crop: { x: 0.1, y: 0, w: 0.8, h: 1 } }))).toBeNull();
+    expect(degenerateClips(mk({ transform: { x: 0, y: 0, scale: 0.5 } }))).toBeNull();
+    expect(degenerateClips(mk({ color: { brightness: 0.1, contrast: 1, saturation: 1 } }))).toBeNull();
+    expect(degenerateClips(mk({ speed: 2 }))).toBeNull();
+    expect(degenerateClips(mk({ opacityKeyframes: [{ t: 0, v: 0 }, { t: 1, v: 1 }] }))).toBeNull();
+    expect(degenerateClips(mk({ volumeKeyframes: [{ t: 0, v: 0 }, { t: 1, v: 1 }] }))).toBeNull();
+    // Sem nada da v0.3, continua degenerada (não regride).
+    expect(degenerateClips(mk({}))).not.toBeNull();
   });
 });

@@ -9,6 +9,7 @@ import {
   concatArgs,
   concatListBody,
   encodeArgs,
+  EXPORT_PRESETS,
   filterComplexArgs,
   keyframeProbeArgs,
   parseKeyframesCsv,
@@ -301,6 +302,42 @@ function dimsOf(path: string): [number, number] {
   return [w, h];
 }
 
+/**
+ * Luma MÉDIO (0..255) do frame no instante `atSec`. Truque: `scale=1:1` colapsa o
+ * frame inteiro num pixel (a média), e `pix_fmt gray` entrega esse pixel como UM
+ * byte cru. É a prova quantitativa do "o frame mudou" (cor) e da rampa (keyframe).
+ */
+function avgLuma(path: string, atSec: number): number {
+  const r = spawnSync(
+    FFMPEG,
+    ["-hide_banner", "-loglevel", "error", "-ss", String(atSec), "-i", path,
+     "-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    { encoding: "buffer" },
+  );
+  const buf = r.stdout;
+  return buf && buf.length > 0 ? buf[buf.length - 1] : -1;
+}
+
+/** Luma MÉDIO de uma REGIÃO (fração 0..1) do frame — pra provar o PiP no canto. */
+function avgLumaRegion(
+  path: string,
+  atSec: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): number {
+  const r = spawnSync(
+    FFMPEG,
+    ["-hide_banner", "-loglevel", "error", "-ss", String(atSec), "-i", path,
+     "-frames:v", "1", "-vf", `crop=iw*${w}:ih*${h}:iw*${x}:ih*${y},scale=1:1`,
+     "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    { encoding: "buffer" },
+  );
+  const buf = r.stdout;
+  return buf && buf.length > 0 ? buf[buf.length - 1] : -1;
+}
+
 describe.skipIf(!ENABLED)("compilador filter_complex (ffmpeg real)", () => {
   beforeAll(() => {
     rmSync(V2DIR, { recursive: true, force: true });
@@ -426,5 +463,185 @@ describe.skipIf(!ENABLED)("compilador filter_complex (ffmpeg real)", () => {
       { path: A, srcIn: 3000, srcOut: 5000 },
     ];
     expect(planExport(clips, { [A]: sourceOf(A) }).kind).toBe("copy");
+  });
+});
+
+/* ================================================================== */
+/* v0.3 — filtros por clipe, PiP, velocidade, keyframes, presets       */
+/* ================================================================== */
+
+const V3DIR = join(tmpdir(), "localvideo-export-v3");
+
+describe.skipIf(!ENABLED)("v0.3 filtros/PiP/velocidade/keyframes/presets (ffmpeg real)", () => {
+  beforeAll(() => {
+    rmSync(V3DIR, { recursive: true, force: true });
+    mkdirSync(V3DIR, { recursive: true });
+    // A = testsrc CLARO (barras coloridas, 10s); B = testsrc2 (6s). Recriados
+    // pra este bloco ser independente.
+    for (const [path, pattern, dur] of [
+      [A, "testsrc", 10],
+      [B, "testsrc2", 6],
+    ] as const) {
+      ffmpeg([
+        "-f", "lavfi", "-i", `${pattern}=size=640x480:rate=30:duration=${dur}`,
+        "-f", "lavfi", "-i", `sine=frequency=440:duration=${dur}`,
+        "-c:v", "libx264", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path,
+      ]);
+    }
+  });
+
+  it("GATE PiP: o vídeo pequeno aparece no CANTO (região tem conteúdo, não preto)", () => {
+    // Base A [0,4s) cheia; B como PiP no canto inf-dir (x=0.6,y=0.6, 35% largura).
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 4000, path: A, srcIn: 0 }]),
+      vtrack(
+        [{ id: "b", startMs: 0, durationMs: 4000, path: B, srcIn: 0, transform: { x: 0.6, y: 0.6, scale: 0.35 } }],
+        "v2",
+      ),
+    ]);
+    const out = join(V3DIR, "pip.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A), [B]: sourceOf(B) }, out));
+
+    expect(dimsOf(out)).toEqual([640, 480]);
+    // O canto onde o PiP está NÃO é preto (o PiP tem imagem). O PiP de 35% em
+    // x=0.6 cobre ~[0.6,0.95]; olho no miolo dele.
+    const cornerLuma = avgLumaRegion(out, 1, 0.68, 0.68, 0.2, 0.2);
+    expect(cornerLuma).toBeGreaterThan(10);
+    extractFrame(out, 1, join(V3DIR, "pip-frame.png"));
+    console.log(`\n  [prova] PiP: luma do canto do PiP = ${cornerLuma} (≠ preto)\n`);
+  });
+
+  it("GATE crop: recorte muda a resolução composta e o conteúdo, mantendo o alvo", () => {
+    // Recorta o quadrante central e deixa preencher o quadro.
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 3000, path: A, srcIn: 0, crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } }]),
+    ]);
+    const out = join(V3DIR, "crop.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out));
+    expect(dimsOf(out)).toEqual([640, 480]); // alvo mantido
+    expect(durationOf(out)).toBeGreaterThan(2900);
+    expect(durationOf(out)).toBeLessThan(3200);
+    extractFrame(out, 1, join(V3DIR, "crop-frame.png"));
+    console.log(`\n  [prova] crop: ${dimsOf(out).join("x")}, ${durationOf(out)} ms\n`);
+  });
+
+  it("GATE cor: o eq muda o luma médio do frame (antes vs depois)", () => {
+    const base = timeline([vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: A, srcIn: 0 }])]);
+    const outBase = join(V3DIR, "color-base.mp4");
+    ffmpeg(filterComplexArgs(base, { [A]: sourceOf(A) }, outBase));
+
+    // Escurece bastante (brilho −0.3, contraste 0.7).
+    const dark = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: A, srcIn: 0, color: { brightness: -0.3, contrast: 0.7, saturation: 1 } }]),
+    ]);
+    const outDark = join(V3DIR, "color-dark.mp4");
+    ffmpeg(filterComplexArgs(dark, { [A]: sourceOf(A) }, outDark));
+
+    const lumaBase = avgLuma(outBase, 1);
+    const lumaDark = avgLuma(outDark, 1);
+    // Escureceu de verdade: luma bem menor.
+    expect(lumaDark).toBeLessThan(lumaBase - 15);
+    console.log(`\n  [prova] cor: luma base ${lumaBase} → escuro ${lumaDark}\n`);
+  });
+
+  it("GATE velocidade 2×: janela de 4 s vira 2 s (ffprobe)", () => {
+    // Clipe: durationMs 2000 @ speed 2 → consome 4 s de fonte, sai com 2 s.
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: A, srcIn: 0, speed: 2 }]),
+    ]);
+    const out = join(V3DIR, "speed2x.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out));
+    const d = durationOf(out);
+    // 4 s de fonte a 2× = 2 s. A folga é do re-encode.
+    expect(d).toBeGreaterThan(1900);
+    expect(d).toBeLessThan(2200);
+    // O áudio existe e não virou silêncio (o atempo preserva o tom, não corta som).
+    const vd = volumedetect(out, 0.3, 1.0);
+    expect(vd.mean).toBeGreaterThan(-50);
+    console.log(`\n  [prova] speed 2×: 4 s de fonte → ${d} ms; áudio mean ${vd.mean} dB\n`);
+  });
+
+  it("GATE câmera lenta ½×: janela de 2 s vira 4 s", () => {
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 4000, path: A, srcIn: 0, speed: 0.5 }]),
+    ]);
+    const out = join(V3DIR, "speed-half.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out));
+    const d = durationOf(out);
+    expect(d).toBeGreaterThan(3900);
+    expect(d).toBeLessThan(4200);
+    console.log(`\n  [prova] speed ½×: 2 s de fonte → ${d} ms\n`);
+  });
+
+  it("GATE preset vertical: saída 1080×1920 (ffprobe)", () => {
+    const tl = timeline([vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: A, srcIn: 0 }])]);
+    const out = join(V3DIR, "vertical.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out, { exportPreset: EXPORT_PRESETS.vertical }));
+    expect(dimsOf(out)).toEqual([1080, 1920]);
+    extractFrame(out, 1, join(V3DIR, "vertical-frame.png"));
+    console.log(`\n  [prova] preset vertical: ${dimsOf(out).join("x")}\n`);
+  });
+
+  it("GATE preset YouTube 1080p: saída 1920×1080", () => {
+    const tl = timeline([vtrack([{ id: "a", startMs: 0, durationMs: 2000, path: A, srcIn: 0 }])]);
+    const out = join(V3DIR, "yt.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out, { exportPreset: EXPORT_PRESETS.youtube1080 }));
+    expect(dimsOf(out)).toEqual([1920, 1080]);
+  });
+
+  it("GATE keyframe de opacidade: rampa 0→1 (frame do começo escuro, do fim claro)", () => {
+    // Opacidade 0 no começo → 1 no fim, sobre fundo preto. O início fica preto
+    // (alfa 0), o fim mostra a imagem (alfa 1). É a prova da rampa por geq.
+    const tl = timeline([
+      vtrack([
+        {
+          id: "a",
+          startMs: 0,
+          durationMs: 4000,
+          path: A,
+          srcIn: 0,
+          opacityKeyframes: [
+            { t: 0, v: 0 },
+            { t: 1, v: 1 },
+          ],
+        },
+      ]),
+    ]);
+    const out = join(V3DIR, "opacity-kf.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out));
+    const early = avgLuma(out, 0.15); // quase todo preto
+    const late = avgLuma(out, 3.85); // imagem cheia
+    expect(late).toBeGreaterThan(early + 20);
+    extractFrame(out, 0.15, join(V3DIR, "opacity-early.png"));
+    extractFrame(out, 3.85, join(V3DIR, "opacity-late.png"));
+    console.log(`\n  [prova] keyframe opacidade: luma início ${early} → fim ${late}\n`);
+  });
+
+  it("GATE keyframe de volume: rampa de ganho (começo baixo, fim alto)", () => {
+    const tl = timeline([
+      atrack(
+        [
+          {
+            id: "z",
+            startMs: 0,
+            durationMs: 4000,
+            path: A,
+            srcIn: 0,
+            volumeKeyframes: [
+              { t: 0, v: 0 },
+              { t: 1, v: 1 },
+            ],
+          },
+        ],
+        "a1",
+      ),
+    ]);
+    const out = join(V3DIR, "volume-kf.mp4");
+    ffmpeg(filterComplexArgs(tl, { [A]: sourceOf(A) }, out));
+    const start = volumedetect(out, 0, 0.3);
+    const end = volumedetect(out, 3.6, 0.3);
+    expect(end.mean).toBeGreaterThan(start.mean + 8);
+    console.log(`\n  [prova] keyframe volume: início ${start.mean} dB → fim ${end.mean} dB\n`);
   });
 });

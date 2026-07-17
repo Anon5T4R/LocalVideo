@@ -68,7 +68,10 @@ export type PlanReason =
   | { code: "encode-no-keyframe-data"; path: string }
   /** A timeline usa recursos da v0.2 (2ª trilha, transição, título, fade,
    *  volume): não é concat, é o compilador de `filter_complex`. */
-  | { code: "encode-multitrack" };
+  | { code: "encode-multitrack" }
+  /** O usuário escolheu um preset que recodifica (resolução/qualidade cravadas):
+   *  mesmo uma timeline simples sai pelo compilador. */
+  | { code: "encode-preset"; preset: ExportPresetId };
 
 export interface ExportPlan {
   kind: "copy" | "encode";
@@ -512,11 +515,66 @@ export function encodeArgs(
  * com o crossfade do vídeo.
  */
 
-import type { Clip, Timeline } from "./timeline";
+import { clipSpeed, type Clip, type ColorAdjust, type CropRect, type Keyframe, type Timeline } from "./timeline";
 
 /** O que o compilador precisa saber de cada arquivo-fonte. Reusa o `SourceInfo`
  *  de cima — width/height/fps/hasAudio bastam pra normalizar e decidir o áudio. */
 export type MediaSources = Record<string, SourceInfo>;
+
+/* ------------------------------------------------------------------ */
+/* Presets de export (v0.3)                                            */
+/* ------------------------------------------------------------------ */
+
+export type ExportPresetId = "source" | "youtube1080" | "vertical" | "whatsapp" | "quality";
+
+/**
+ * Um preset crava as decisões de saída (resolução/fps/codec/qualidade/áudio) num
+ * nome que o usuário entende ("YouTube 1080p") em vez de campos técnicos soltos.
+ * `width/height/fps = 0` significa "mantém o que a composição já tem" (a
+ * resolução do 1º clipe, o maior fps) — é o caso do "source" e do "qualidade".
+ */
+export interface ExportPreset {
+  id: ExportPresetId;
+  width: number;
+  height: number;
+  fps: number;
+  vcodec: string;
+  crf: number;
+  x264preset: string;
+  audioBitrate: string;
+  /** Extensão/contêiner de saída sugerido. */
+  container: string;
+  /** Precisa recodificar (não cabe no `-c copy`)? Só "source" pode ser copiado. */
+  reencode: boolean;
+}
+
+export const EXPORT_PRESETS: Record<ExportPresetId, ExportPreset> = {
+  // O padrão: mantém tudo do fonte e deixa o `planExport` escolher copy/encode.
+  source: {
+    id: "source", width: 0, height: 0, fps: 0, vcodec: "libx264", crf: 20,
+    x264preset: "veryfast", audioBitrate: "192k", container: "mp4", reencode: false,
+  },
+  // 1920×1080, qualidade alta de plataforma.
+  youtube1080: {
+    id: "youtube1080", width: 1920, height: 1080, fps: 0, vcodec: "libx264", crf: 20,
+    x264preset: "medium", audioBitrate: "192k", container: "mp4", reencode: true,
+  },
+  // Vertical 9:16 (Reels/Shorts/Stories).
+  vertical: {
+    id: "vertical", width: 1080, height: 1920, fps: 0, vcodec: "libx264", crf: 21,
+    x264preset: "medium", audioBitrate: "160k", container: "mp4", reencode: true,
+  },
+  // Menor: mesma resolução, CRF alto + áudio menor = arquivo pequeno pra mandar.
+  whatsapp: {
+    id: "whatsapp", width: 0, height: 0, fps: 30, vcodec: "libx264", crf: 30,
+    x264preset: "veryfast", audioBitrate: "96k", container: "mp4", reencode: true,
+  },
+  // Máxima qualidade (quase sem perda): mantém resolução/fps, CRF baixíssimo.
+  quality: {
+    id: "quality", width: 0, height: 0, fps: 0, vcodec: "libx264", crf: 14,
+    x264preset: "slow", audioBitrate: "256k", container: "mp4", reencode: true,
+  },
+};
 
 /** Opções de saída (mesmos padrões do `encodeArgs`). */
 export interface CompileOptions {
@@ -525,6 +583,93 @@ export interface CompileOptions {
   /** Caminho ABSOLUTO da fonte embarcada (o ffmpeg não acha fonte sozinho no
    *  Windows). Obrigatório se houver título; o Rust resolve e passa. */
   fontPath?: string;
+  /** Preset de export: crava resolução/fps/codec/qualidade. Ausente = "source". */
+  exportPreset?: ExportPreset;
+}
+
+/* ------------------------------------------------------------------ */
+/* Filtros por clipe (v0.3): crop, cor, PiP, velocidade, envelopes      */
+/* ------------------------------------------------------------------ */
+
+/** O recorte é "cheio" (não faz nada)? Evita meter um `crop` que não corta. */
+function isFullCrop(c: CropRect): boolean {
+  return c.x <= 0.0001 && c.y <= 0.0001 && c.w >= 0.9999 && c.h >= 0.9999;
+}
+
+/** `crop` em pixels do fonte, expresso como fração de `iw`/`ih` (o ffmpeg avalia
+ *  a expressão — assim o corte independe da resolução exata do arquivo). */
+function cropExpr(c: CropRect): string {
+  const f = (n: number) => Math.max(0, Math.min(1, n)).toFixed(4);
+  return `crop=iw*${f(c.w)}:ih*${f(c.h)}:iw*${f(c.x)}:ih*${f(c.y)}`;
+}
+
+/** Cor neutra (nada a fazer)? */
+function isNeutralColor(c: ColorAdjust): boolean {
+  return Math.abs(c.brightness) < 0.001 && Math.abs(c.contrast - 1) < 0.001 && Math.abs(c.saturation - 1) < 0.001;
+}
+
+/** `eq` do ffmpeg: brilho (aditivo), contraste e saturação (multiplicativos). */
+function eqExpr(c: ColorAdjust): string {
+  const f = (n: number) => n.toFixed(3);
+  return `eq=brightness=${f(c.brightness)}:contrast=${f(c.contrast)}:saturation=${f(c.saturation)}`;
+}
+
+/**
+ * Corrente de `atempo` pra uma velocidade de áudio. O `atempo` só aceita fator
+ * 0.5..100 por instância — abaixo de 0.5 (câmera lenta) é preciso encadear
+ * (0.25 = 0.5×0.5). Acima de 1 um instância só resolve toda a faixa até 4×. É o
+ * gotcha que a spec pediu pra encadear.
+ */
+export function atempoChain(speed: number): string[] {
+  const out: string[] = [];
+  let s = speed;
+  // Câmera lenta forte: quebra em fatores de 0.5 até caber.
+  while (s < 0.5 - 1e-6) {
+    out.push("atempo=0.5");
+    s /= 0.5;
+  }
+  // Acelerar forte: quebra em fatores de 2 (defensivo; 4× já cabe em um só).
+  while (s > 2 + 1e-6) {
+    out.push("atempo=2.0");
+    s /= 2;
+  }
+  out.push(`atempo=${s.toFixed(6)}`);
+  return out;
+}
+
+/**
+ * Expressão piecewise-linear de um envelope no tempo. `pts` são {t (fração 0..1),
+ * v}; `durSec` é a duração do clipe em segundos; `tvar` é a variável de tempo do
+ * filtro (`T` no geq de vídeo, `t` no volume de áudio). Antes do 1º ponto vale o
+ * 1º valor; depois do último, o último; entre pontos, interpola linear.
+ */
+export function envelopeExpr(pts: Keyframe[], durSec: number, tvar: string): string {
+  const p = [...pts].sort((a, b) => a.t - b.t);
+  if (p.length === 0) return "1";
+  const f = (n: number) => n.toFixed(4);
+  if (p.length === 1) return f(p[0].v);
+  // De trás pra frente: o "senão" mais interno é o último valor (fallthrough).
+  let expr = f(p[p.length - 1].v);
+  for (let i = p.length - 2; i >= 0; i--) {
+    const ta = p[i].t * durSec;
+    const tb = p[i + 1].t * durSec;
+    const seg =
+      tb > ta
+        ? `(${f(p[i].v)}+(${f(p[i + 1].v - p[i].v)})*(${tvar}-${f(ta)})/${f(tb - ta)})`
+        : f(p[i + 1].v);
+    expr = `if(lt(${tvar}\\,${f(tb)})\\,${seg}\\,${expr})`;
+  }
+  // Antes do 1º ponto: o 1º valor.
+  expr = `if(lt(${tvar}\\,${f(p[0].t * durSec)})\\,${f(p[0].v)}\\,${expr})`;
+  return expr;
+}
+
+/** O `geq` que pinta o canal alfa com o envelope de opacidade, deixando a cor
+ *  passar intacta. É o caminho da spec pra keyframe de opacidade (provado com
+ *  frame real). Vírgulas escapadas porque o valor vai dentro do filtergraph. */
+function alphaEnvelopeGeq(env: Keyframe[], durSec: number): string {
+  const e = envelopeExpr(env, durSec, "T");
+  return `geq=lum='lum(X\\,Y)':cb='cb(X\\,Y)':cr='cr(X\\,Y)':a='255*clip(${e}\\,0\\,1)'`;
 }
 
 /**
@@ -567,8 +712,14 @@ function fontfileArg(path: string): string {
 }
 
 /** Geometria/fps de saída: a do PRIMEIRO clipe de mídia da trilha base é "o
- *  vídeo" pro usuário; o fps é o MAIOR (baixar joga quadro fora de vez). */
-function targetFormat(tl: Timeline, sources: MediaSources): { w: number; h: number; fps: number } {
+ *  vídeo" pro usuário; o fps é o MAIOR (baixar joga quadro fora de vez). Um
+ *  preset com resolução/fps cravados VENCE — é o que faz "vertical 9:16" sair
+ *  1080×1920 mesmo com fonte 640×480 (o clipe entra com barra, sem esticar). */
+function targetFormat(
+  tl: Timeline,
+  sources: MediaSources,
+  preset?: ExportPreset,
+): { w: number; h: number; fps: number } {
   let w = 0;
   let h = 0;
   let fps = 0;
@@ -584,7 +735,10 @@ function targetFormat(tl: Timeline, sources: MediaSources): { w: number; h: numb
       fps = Math.max(fps, s.fps || 0);
     }
   }
-  return { w: w || 1920, h: h || 1080, fps: fps || 30 };
+  const outW = preset && preset.width > 0 ? preset.width : w || 1920;
+  const outH = preset && preset.height > 0 ? preset.height : h || 1080;
+  const outFps = preset && preset.fps > 0 ? preset.fps : fps || 30;
+  return { w: outW, h: outH, fps: outFps };
 }
 
 /** A janela `[start,end)` do clipe na timeline, em segundos com 3 casas. */
@@ -623,9 +777,12 @@ export function filterComplexArgs(
   out: string,
   opts: CompileOptions = {},
 ): string[] {
-  const crf = opts.crf ?? 20;
-  const preset = opts.preset ?? "veryfast";
-  const { w, h, fps } = targetFormat(tl, sources);
+  const xp = opts.exportPreset;
+  const crf = opts.crf ?? xp?.crf ?? 20;
+  const preset = opts.preset ?? xp?.x264preset ?? "veryfast";
+  const vcodec = xp?.vcodec ?? "libx264";
+  const audioBitrate = xp?.audioBitrate ?? "192k";
+  const { w, h, fps } = targetFormat(tl, sources, xp);
 
   // Duração do filme = a trilha mais longa (o fundo preto tem essa duração).
   let total = 0;
@@ -667,39 +824,66 @@ export function filterComplexArgs(
         const { s, e } = span(c);
 
         if (c.path !== undefined) {
-          // Clipe de mídia: recorta no tempo do arquivo, rebobina, normaliza
-          // geometria/fps, aplica alfa (crossfade + opacidade) e desloca pro
+          // Clipe de mídia: recorta no tempo do arquivo, rebobina, aplica os
+          // filtros por clipe (recorte/cor/PiP), muda a velocidade, normaliza o
+          // fps, aplica alfa (opacidade/envelope + crossfade) e desloca pro
           // `startMs`; depois entra por overlay ligado só na janela do clipe.
           const idx = inputIndex.get(c.id)!;
           const info = sources[c.path];
+          const sp = clipSpeed(c);
           const si = secs(c.srcIn ?? 0);
-          const so = secs((c.srcIn ?? 0) + c.durationMs);
+          // A janela-fonte considera a velocidade: 2× consome o dobro de fonte.
+          const so = secs((c.srcIn ?? 0) + c.durationMs * sp);
           const vf = [`trim=start=${si}:end=${so}`, "setpts=PTS-STARTPTS"];
-          if (!info || info.width !== w || info.height !== h) {
+
+          // 1) Recorte do frame (crop) — em pixels do fonte.
+          if (c.crop && !isFullCrop(c.crop)) vf.push(cropExpr(c.crop));
+          // 2) Cor (eq) — brilho/contraste/saturação.
+          if (c.color && !isNeutralColor(c.color)) vf.push(eqExpr(c.color));
+
+          // 3) Geometria: PiP (escala pra uma largura menor, sem barra — o overlay
+          //    posiciona) OU encaixe no quadro cheio (scale+pad). Depois de um
+          //    crop as dimensões mudaram, então o encaixe também precisa rodar.
+          const pip = c.transform;
+          if (pip) {
+            const pw = Math.max(2, Math.round((pip.scale * w) / 2) * 2); // par
+            vf.push(`scale=${pw}:-2`);
+          } else if (!info || info.width !== w || info.height !== h || (c.crop && !isFullCrop(c.crop))) {
             vf.push(
               `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
               `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
             );
           }
-          vf.push("setsar=1", `fps=${fps}`);
+          vf.push("setsar=1");
 
-          // Crossfade: se cruza o clipe de MÍDIA anterior da trilha, entra com
-          // fade no alfa. Título não conta — ele é desenhado por cima (drawtext),
-          // não é uma camada que se dissolve.
+          // 4) Velocidade: reescala o PTS (2× ⇒ metade do tempo). Antes do fps e
+          //    da janela de alfa, que já contam no tempo de TIMELINE do clipe.
+          if (sp !== 1) vf.push(`setpts=${(1 / sp).toFixed(6)}*PTS`);
+          vf.push(`fps=${fps}`);
+
+          // 5) Alfa: envelope de opacidade (geq) OU opacidade constante, e por
+          //    cima o crossfade (fade no alfa) da sobreposição com o vizinho de
+          //    mídia anterior. O geq SETA o alfa, então vem ANTES do fade (que o
+          //    multiplica durante a transição). Título não faz crossfade.
           const prevClip = ci > 0 ? track.clips[ci - 1] : undefined;
           const prev = prevClip && prevClip.path !== undefined ? overlapMs(prevClip, c) : 0;
           const op = c.opacity ?? 1;
-          if (prev > 0 || op < 1) {
+          const env = c.opacityKeyframes;
+          const hasEnv = !!env && env.length > 0;
+          if (prev > 0 || op < 1 || hasEnv) {
             vf.push("format=yuva420p");
+            if (hasEnv) vf.push(alphaEnvelopeGeq(env!, c.durationMs / 1000));
+            else if (op < 1) vf.push(`colorchannelmixer=aa=${op}`);
             if (prev > 0) vf.push(`fade=t=in:st=0:d=${secs(prev)}:alpha=1`);
-            if (op < 1) vf.push(`colorchannelmixer=aa=${op}`);
           }
           // Desloca pro lugar na timeline.
           vf.push(`setpts=PTS+${s}/TB`);
 
+          const ox = pip ? Math.round(pip.x * w) : 0;
+          const oy = pip ? Math.round(pip.y * h) : 0;
           parts.push(`[${idx}:v]${vf.join(",")}[v${k}]`);
           parts.push(
-            `${acc}[v${k}]overlay=x=0:y=0:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
+            `${acc}[v${k}]overlay=x=${ox}:y=${oy}:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
           );
           acc = `[vacc${k}]`;
           k++;
@@ -735,15 +919,27 @@ export function filterComplexArgs(
       const info = sources[c.path];
       if (!info?.hasAudio || c.muted) return;
       const idx = inputIndex.get(c.id)!;
+      const sp = clipSpeed(c);
       const si = secs(c.srcIn ?? 0);
-      const so = secs((c.srcIn ?? 0) + c.durationMs);
+      // Janela-fonte com velocidade: 2× consome o dobro de áudio no mesmo tempo.
+      const so = secs((c.srcIn ?? 0) + c.durationMs * sp);
       const af = [
         `atrim=start=${si}:end=${so}`,
         "asetpts=PTS-STARTPTS",
         "aresample=48000",
         "aformat=sample_fmts=fltp:channel_layouts=stereo",
       ];
-      if (c.volume !== undefined && c.volume !== 1) af.push(`volume=${c.volume}`);
+      // Velocidade do áudio ANTES de volume/fade/adelay: a partir daqui o tempo
+      // do fluxo é o tempo de TIMELINE do clipe (0..durationMs), que é onde os
+      // fades e o envelope de volume estão ancorados.
+      if (sp !== 1) af.push(...atempoChain(sp));
+      // Volume: envelope (expressão no tempo) OU ganho constante.
+      const venv = c.volumeKeyframes;
+      if (venv && venv.length > 0) {
+        af.push(`volume=volume='${envelopeExpr(venv, c.durationMs / 1000, "t")}':eval=frame`);
+      } else if (c.volume !== undefined && c.volume !== 1) {
+        af.push(`volume=${c.volume}`);
+      }
       // Fade: o maior entre o que o usuário pediu e a sobreposição (crossfade) —
       // e só com VIZINHO DE MÍDIA (título não tem áudio, não faz crossfade).
       const prevA = ci > 0 ? track.clips[ci - 1] : undefined;
@@ -781,9 +977,9 @@ export function filterComplexArgs(
   if (aLabel) args.push("-map", aLabel);
 
   if (vLabel) {
-    args.push("-c:v", "libx264", "-preset", preset, "-crf", String(crf), "-pix_fmt", "yuv420p");
+    args.push("-c:v", vcodec, "-preset", preset, "-crf", String(crf), "-pix_fmt", "yuv420p");
   }
-  if (aLabel) args.push("-c:a", "aac", "-b:a", "192k");
+  if (aLabel) args.push("-c:a", "aac", "-b:a", audioBitrate);
   args.push("-movflags", "+faststart", out);
   return args;
 }
@@ -816,6 +1012,14 @@ export function degenerateClips(tl: Timeline): ExportClip[] | null {
     if (c.volume !== undefined && c.volume !== 1) return null;
     if (c.fadeInMs || c.fadeOutMs) return null;
     if (c.opacity !== undefined && c.opacity < 1) return null;
+    // v0.3: qualquer filtro/velocidade/envelope tira do caminho -c copy (todos
+    // exigem recodificar — não há como "copiar pacote" com pixel ou tempo mexido).
+    if (c.crop && !isFullCrop(c.crop)) return null;
+    if (c.transform) return null;
+    if (c.color && !isNeutralColor(c.color)) return null;
+    if (c.speed !== undefined && c.speed !== 1) return null;
+    if (c.opacityKeyframes && c.opacityKeyframes.length > 0) return null;
+    if (c.volumeKeyframes && c.volumeKeyframes.length > 0) return null;
     // Em fila, encostadinho: sem buraco e sem sobreposição (transição).
     if (c.startMs !== cursor) return null;
     cursor += c.durationMs;
