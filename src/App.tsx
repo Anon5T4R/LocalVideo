@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { useCallback, useEffect, useState } from "react";
+import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import ClipInspector from "./components/ClipInspector";
 import ExportModal from "./components/ExportModal";
@@ -98,27 +98,48 @@ export default function App() {
 
   /* ---------------- arrastar e soltar ---------------- */
 
+  // O handler do drop vive num ref pra que o listener possa ser registrado UMA
+  // vez só. Antes ele dependia de `guard`, que muda a cada tecla dada na
+  // timeline (`ed.dirty`/`ed.history` entram nas deps dele) — ou seja, o efeito
+  // re-rodava o tempo todo, e cada re-rodada era um sorteio pra vazar listener.
+  const handleDrop = (e: DragDropEvent) => {
+    if (e.type === "over") setDropping(true);
+    else if (e.type === "leave") setDropping(false);
+    else if (e.type === "drop") {
+      setDropping(false);
+      const paths = e.paths.filter((p) =>
+        VIDEO_EXT.includes(p.split(".").pop()?.toLowerCase() ?? ""),
+      );
+      const proj = e.paths.find((p) => p.toLowerCase().endsWith(".tvproj"));
+      if (proj) guard(() => void useEditor.getState().openProject(proj));
+      else if (paths.length > 0) void useEditor.getState().importPaths(paths);
+    }
+  };
+  const onDrop = useRef(handleDrop);
+  // Atualizar o ref em efeito, não no meio do render: render tem que ser puro
+  // (o React pode render e jogar fora o resultado).
+  useEffect(() => {
+    onDrop.current = handleDrop;
+  });
+
   useEffect(() => {
     // O drop vem do WEBVIEW do Tauri (o `drop` do DOM não entrega caminho de
     // arquivo — só um File sem path, que o ffmpeg não sabe abrir).
+    let cancelled = false;
     let un: (() => void) | undefined;
     try {
       void getCurrentWebview()
-        .onDragDropEvent((e) => {
-          if (e.payload.type === "over") setDropping(true);
-          else if (e.payload.type === "leave") setDropping(false);
-          else if (e.payload.type === "drop") {
-            setDropping(false);
-            const paths = e.payload.paths.filter((p) =>
-              VIDEO_EXT.includes(p.split(".").pop()?.toLowerCase() ?? ""),
-            );
-            const proj = e.payload.paths.find((p) => p.toLowerCase().endsWith(".tvproj"));
-            if (proj) guard(() => void useEditor.getState().openProject(proj));
-            else if (paths.length > 0) void useEditor.getState().importPaths(paths);
-          }
-        })
+        .onDragDropEvent((e) => onDrop.current?.(e.payload))
         .then((f) => {
-          un = f;
+          // O GOTCHA que fazia o app importar o MESMO arquivo duas/três vezes:
+          // `un` só existe quando esta promessa resolve. Se a limpeza do efeito
+          // correu antes disso, ela via `un === undefined`, não desregistrava
+          // nada, e o listener ficava órfão pra sempre — invisível, porque
+          // ninguém mais tinha a alça dele. Dois órfãos = um drop importando o
+          // arquivo duas vezes = dois toasts idênticos na cara do usuário.
+          // Chegando tarde, desregistra na hora em vez de guardar a alça.
+          if (cancelled) f();
+          else un = f;
         })
         .catch(() => {
           /* fora do Tauri não há drop nativo */
@@ -128,8 +149,11 @@ export default function App() {
       // `__TAURI_INTERNALS__`). Sem este try, o smoke no navegador — o cheque de
       // tema/idioma do padrão da suíte — morreria na tela branca.
     }
-    return () => un?.();
-  }, [guard]);
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, []);
 
   /* ---------------- atalhos (o que faz parecer NLE) ---------------- */
 

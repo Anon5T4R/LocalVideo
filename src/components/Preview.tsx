@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
 import { formatDuration, formatTimecode } from "../lib/probe";
-import { timeToClip, totalDuration } from "../lib/timeline";
+import { endHit, timeToClip, totalDuration } from "../lib/timeline";
 import { useEditor } from "../state/editor";
 
 /**
@@ -41,8 +41,16 @@ export default function Preview() {
   /** O canvas tem um quadro pintado e válido pro playhead de agora? */
   const [painted, setPainted] = useState(false);
 
-  const hit = useMemo(() => timeToClip(track, playhead), [track, playhead]);
   const total = useMemo(() => totalDuration(track), [track]);
+  // No fim exato (`playhead === total`) o `timeToClip` devolve null — e é o
+  // certo: o filme acabou, não há clipe tocando. Só que é EXATAMENTE onde o play
+  // para, e prévia vazia dizendo "importe um vídeo" com a timeline cheia é
+  // mentira na cara de quem acabou de assistir. Pra exibir, o fim gruda no
+  // último quadro (ver `endHit`).
+  const hit = useMemo(
+    () => timeToClip(track, playhead) ?? (playhead >= total ? endHit(track) : null),
+    [track, playhead, total],
+  );
   const gone = hit ? missing.includes(hit.clip.path) : false;
   const fps = hit ? (media[hit.clip.path]?.fps ?? 30) : 30;
   const exact = hit && !gone ? canDecodeExactly(hit.clip.path) : false;

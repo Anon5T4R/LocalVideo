@@ -143,6 +143,9 @@ const pt = {
   "err.probeFailed": "não deu pra abrir este arquivo (formato não suportado ou arquivo danificado)",
   "err.thumbsFailed": "não deu pra gerar as miniaturas",
   "err.generic": "não deu pra abrir este arquivo",
+  "err.batchFailed":
+    "{n} arquivos não entraram na timeline: {names}. Podem estar danificados ou num formato que o LocalVideo não abre — o resto foi importado.",
+  "err.andMore": "{names} e mais {n}",
 
   "proj.saved": "Projeto salvo em {name}",
   "proj.saveFailed": "Não deu pra salvar o projeto. Confira se a pasta existe e tem espaço.",
@@ -309,6 +312,9 @@ const en: Record<MessageKey, string> = {
   "err.probeFailed": "couldn't open this file (unsupported format or damaged file)",
   "err.thumbsFailed": "couldn't build the thumbnails",
   "err.generic": "couldn't open this file",
+  "err.batchFailed":
+    "{n} files didn't make it into the timeline: {names}. They may be damaged or in a format LocalVideo can't open — the rest were imported.",
+  "err.andMore": "{names} and {n} more",
 
   "proj.saved": "Project saved to {name}",
   "proj.saveFailed": "Couldn't save the project. Check that the folder exists and has room.",
@@ -476,6 +482,9 @@ const es: Record<MessageKey, string> = {
   "err.probeFailed": "no se pudo abrir este archivo (formato no compatible o archivo dañado)",
   "err.thumbsFailed": "no se pudieron generar las miniaturas",
   "err.generic": "no se pudo abrir este archivo",
+  "err.batchFailed":
+    "{n} archivos no entraron en la línea de tiempo: {names}. Pueden estar dañados o en un formato que LocalVideo no abre — el resto se importó.",
+  "err.andMore": "{names} y {n} más",
 
   "proj.saved": "Proyecto guardado en {name}",
   "proj.saveFailed": "No se pudo guardar el proyecto. Comprueba que la carpeta existe y tiene espacio.",

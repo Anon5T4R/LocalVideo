@@ -852,6 +852,20 @@ kbd {
   padding: 9px 16px;
   cursor: pointer;
   max-width: 70vw;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* O "×3" da mensagem repetida: encostado à direita, discreto — ele conta a
+   repetição, não compete com a frase. */
+.toast-count {
+  margin-left: auto;
+  flex: none;
+  font-size: 0.85em;
+  opacity: 0.75;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
 }
 .toast.ok {
   border-color: var(--accent);

@@ -84,6 +84,30 @@ export function timeToClip(track: Track, t: number): Hit | null {
   return null;
 }
 
+/**
+ * O último quadro do filme — o `Hit` que o `timeToClip` de propósito NÃO dá.
+ *
+ * O contrato do `timeToClip` está certo: no fim exato não há clipe tocando. Mas
+ * a PRÉVIA precisa mostrar alguma coisa ali, e "ali" é onde o play termina (o
+ * próprio app dá `seek(total)` ao acabar). Sem isto, assistir até o fim apagava
+ * a prévia e trocava o filme por "importe um vídeo" — com a timeline cheia.
+ *
+ * Fica aqui, e não no componente, porque é a mesma matemática de tempo do resto
+ * do módulo — e porque assim tem teste.
+ */
+export function endHit(track: Track): Hit | null {
+  let acc = 0;
+  let last: Hit | null = null;
+  for (let i = 0; i < track.clips.length; i++) {
+    const c = track.clips[i];
+    const d = clipDuration(c);
+    if (d === 0) continue; // clipe vazio não é "o último quadro" de nada
+    last = { clip: c, index: i, srcTime: c.srcOut, clipStart: acc };
+    acc += d;
+  }
+  return last;
+}
+
 /** Gerador de id. Simples de propósito: só precisa ser único na sessão. */
 let seq = 0;
 export function newId(prefix = "c"): string {

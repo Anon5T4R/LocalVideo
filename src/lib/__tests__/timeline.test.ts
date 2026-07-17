@@ -12,6 +12,7 @@ import {
   remove,
   replacePresent,
   split,
+  endHit,
   timeToClip,
   totalDuration,
   trim,
@@ -57,6 +58,18 @@ describe("leitura da trilha", () => {
     expect(timeToClip(base(), 6000)).toBeNull();
     expect(timeToClip(base(), 999999)).toBeNull();
     expect(timeToClip(base(), -1)).toBeNull();
+  });
+
+  it("endHit dá o ÚLTIMO quadro — é o que a prévia mostra no fim", () => {
+    // Assistir até o fim não pode apagar a prévia: o `timeToClip` diz "não há
+    // clipe em 6000" (certo), e o `endHit` diz "o último quadro é este".
+    expect(endHit(base())).toMatchObject({ index: 2, srcTime: 3000, clipStart: 3000 });
+    expect(endHit({ clips: [] })).toBeNull();
+  });
+
+  it("endHit pula clipe de duração zero", () => {
+    const t: Track = { clips: [clip("a", 0, 1000), clip("z", 500, 500, "z.mp4")] };
+    expect(endHit(t)).toMatchObject({ index: 0, srcTime: 1000 });
   });
 });
 
