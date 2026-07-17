@@ -43,6 +43,10 @@ const pt = {
   "preview.play": "Reproduzir",
   "preview.pause": "Pausar",
   "preview.gone": "Este arquivo não está mais no lugar.",
+  "preview.gap": "Vazio entre clipes",
+  "preview.mix": "♪ mixando trilhas",
+  "preview.mixHint":
+    "A prévia agora toca as trilhas de áudio de fundo junto com a base. Amplificar acima de 100% só vale no export.",
   "preview.exact": "Prévia exata, quadro a quadro.",
   "preview.roughNoCodecs":
     "Prévia aproximada: este sistema não tem o decodificador de quadro a quadro.",
@@ -84,6 +88,9 @@ const pt = {
   "exp.doneCopy": "Exportado sem recodificar — os cortes caíram em quadro-chave.",
   "exp.doneEncode": "Recodificado pra cortar exatamente onde você pediu.",
   "exp.doneTime": "Levou {time}.",
+  "exp.openFile": "Abrir vídeo",
+  "exp.revealFile": "Mostrar na pasta",
+  "exp.openFailed": "Não consegui abrir. O arquivo pode ter sido movido.",
 
   "mk.import": "Importar marcadores…",
   "mk.dlgMarkers": "Marcadores (JSON)",
@@ -242,6 +249,11 @@ const pt = {
   "unsaved.save": "Salvar",
   "unsaved.discard": "Descartar",
 
+  "close.dirty": "Você tem alterações não salvas. Fechar mesmo assim? O que não foi salvo se perde.",
+  "close.exporting":
+    "Uma exportação está em andamento. Fechar agora cancela e descarta o arquivo pela metade.",
+  "close.leave": "Fechar",
+
   "dlg.ok": "OK",
   "dlg.cancel": "Cancelar",
 
@@ -293,6 +305,10 @@ const en: Record<MessageKey, string> = {
   "preview.play": "Play",
   "preview.pause": "Pause",
   "preview.gone": "This file isn't where it used to be.",
+  "preview.gap": "Empty space between clips",
+  "preview.mix": "♪ mixing tracks",
+  "preview.mixHint":
+    "The preview now plays the background audio tracks together with the base. Boosting above 100% only lands in the export.",
   "preview.exact": "Exact preview, frame by frame.",
   "preview.roughNoCodecs": "Approximate preview: this system has no frame-by-frame decoder.",
   "preview.roughContainer":
@@ -333,6 +349,9 @@ const en: Record<MessageKey, string> = {
   "exp.doneCopy": "Exported without re-encoding — your cuts landed on keyframes.",
   "exp.doneEncode": "Re-encoded so the cuts land exactly where you asked.",
   "exp.doneTime": "Took {time}.",
+  "exp.openFile": "Open video",
+  "exp.revealFile": "Show in folder",
+  "exp.openFailed": "Couldn't open it. The file may have been moved.",
 
   "mk.import": "Import markers…",
   "mk.dlgMarkers": "Markers (JSON)",
@@ -490,6 +509,11 @@ const en: Record<MessageKey, string> = {
   "unsaved.save": "Save",
   "unsaved.discard": "Discard",
 
+  "close.dirty": "You have unsaved changes. Close anyway? Anything unsaved will be lost.",
+  "close.exporting":
+    "An export is in progress. Closing now cancels it and discards the half-finished file.",
+  "close.leave": "Close",
+
   "dlg.ok": "OK",
   "dlg.cancel": "Cancel",
 
@@ -539,6 +563,10 @@ const es: Record<MessageKey, string> = {
   "preview.play": "Reproducir",
   "preview.pause": "Pausar",
   "preview.gone": "Este archivo ya no está donde estaba.",
+  "preview.gap": "Espacio vacío entre clips",
+  "preview.mix": "♪ mezclando pistas",
+  "preview.mixHint":
+    "La vista previa ahora reproduce las pistas de audio de fondo junto con la base. Amplificar por encima del 100% solo se aplica en la exportación.",
   "preview.exact": "Vista previa exacta, fotograma a fotograma.",
   "preview.roughNoCodecs":
     "Vista previa aproximada: este sistema no tiene el decodificador fotograma a fotograma.",
@@ -580,6 +608,9 @@ const es: Record<MessageKey, string> = {
   "exp.doneCopy": "Exportado sin recodificar — los cortes cayeron en fotogramas clave.",
   "exp.doneEncode": "Recodificado para cortar exactamente donde lo pediste.",
   "exp.doneTime": "Tardó {time}.",
+  "exp.openFile": "Abrir video",
+  "exp.revealFile": "Mostrar en la carpeta",
+  "exp.openFailed": "No se pudo abrir. Puede que el archivo se haya movido.",
 
   "mk.import": "Importar marcadores…",
   "mk.dlgMarkers": "Marcadores (JSON)",
@@ -738,6 +769,11 @@ const es: Record<MessageKey, string> = {
   "unsaved.body": "Tienes cortes que aún no se han guardado. Si continúas, se pierden.",
   "unsaved.save": "Guardar",
   "unsaved.discard": "Descartar",
+
+  "close.dirty": "Tienes cambios sin guardar. ¿Cerrar de todas formas? Se perderá lo que no se haya guardado.",
+  "close.exporting":
+    "Hay una exportación en curso. Cerrar ahora la cancela y descarta el archivo a medias.",
+  "close.leave": "Cerrar",
 
   "dlg.ok": "OK",
   "dlg.cancel": "Cancelar",

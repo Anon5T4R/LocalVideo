@@ -583,6 +583,11 @@ kbd {
   justify-content: center;
   margin-top: 16px;
 }
+/* Três botões (abrir/mostrar/OK) podem não caber num modal estreito — quebra
+   em vez de estourar a largura. */
+.done-actions {
+  flex-wrap: wrap;
+}
 
 /* pares rótulo/valor do inspetor */
 .kv-list {

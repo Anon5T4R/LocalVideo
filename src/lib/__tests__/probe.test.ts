@@ -6,6 +6,7 @@ import {
   formatSize,
   formatTimecode,
   frameMs,
+  gapAdvance,
   nearestThumb,
   parseFrameRate,
   stepFrames,
@@ -91,6 +92,53 @@ describe("passo de quadro", () => {
     expect(stepFrames(0, -1, 25, 5000)).toBe(0); // não passa do começo
     expect(stepFrames(5000, 1, 25, 5000)).toBe(5000); // nem do fim
     expect(stepFrames(1000, 10, 25, 5000)).toBe(1400);
+  });
+
+  it("passo e timecode andam JUNTOS no NTSC — o atraso de 1 quadro, cravado", () => {
+    // Regressão: um passo pra frente TEM que mudar o número do quadro na tela.
+    // Antes, stepFrames(0,1,30)→33ms e formatTimecode(33,30) truncava pra "00".
+    const fps = 30; // frameMs = 33,333… (não inteiro: é o que expunha o bug)
+    const one = stepFrames(0, 1, fps, 60000);
+    expect(formatTimecode(one, fps)).toBe("00:00:00:01");
+    const two = stepFrames(one, 1, fps, 60000);
+    expect(formatTimecode(two, fps)).toBe("00:00:00:02");
+    // E sem DERIVA: 30 passos de um quadro caem exatamente em 1 s / quadro 0.
+    let p = 0;
+    for (let i = 0; i < 30; i++) p = stepFrames(p, 1, fps, 60000);
+    expect(formatTimecode(p, fps)).toBe("00:00:01:00");
+    // NTSC 29,97 idem: o índice de quadro anda sem escorregar.
+    const ntsc = 30000 / 1001;
+    let q = 0;
+    for (let i = 0; i < 5; i++) q = stepFrames(q, 1, ntsc, 60000);
+    expect(formatTimecode(q, ntsc)).toBe("00:00:00:05");
+  });
+});
+
+describe("gapAdvance — correr pelo vazio", () => {
+  it("anda o playhead pelo relógio de parede, na velocidade pedida", () => {
+    // 16 ms de wall-clock a 1× ⇒ +16 ms; a 2× ⇒ +32 ms.
+    expect(gapAdvance(1000, 16, 1, 5000)).toEqual({ playhead: 1016, ended: false });
+    expect(gapAdvance(1000, 16, 2, 5000)).toEqual({ playhead: 1032, ended: false });
+    // Somando quadro a quadro NÃO deriva: 10 passos de 16 ms caem em +160 ms.
+    let p = 0;
+    for (let i = 0; i < 10; i++) p = gapAdvance(p, 16, 1, 5000).playhead;
+    expect(p).toBe(160);
+  });
+
+  it("prende no fim e SINALIZA quando o passo cruzaria a duração", () => {
+    // O passo passaria de 5000 ⇒ crava em 5000 e diz que acabou (o chamador pausa).
+    expect(gapAdvance(4990, 16, 1, 5000)).toEqual({ playhead: 5000, ended: true });
+    // Exatamente no fim também conta como fim (não reagenda mais um quadro).
+    expect(gapAdvance(5000, 16, 1, 5000)).toEqual({ playhead: 5000, ended: true });
+    // Antes do fim, segue correndo.
+    expect(gapAdvance(4000, 16, 1, 5000).ended).toBe(false);
+  });
+
+  it("rate <= 0 não recua aqui (a ré tem o seu próprio ticker) — trata como 1×", () => {
+    // Blindagem: se por engano chamarem com 0/negativo, não trava nem anda pra
+    // trás; usa 1× pra o tempo seguir em frente.
+    expect(gapAdvance(1000, 16, 0, 5000)).toEqual({ playhead: 1016, ended: false });
+    expect(gapAdvance(1000, 16, -2, 5000)).toEqual({ playhead: 1016, ended: false });
   });
 });
 

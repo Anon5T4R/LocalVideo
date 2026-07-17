@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import ClipInspector from "./components/ClipInspector";
@@ -148,6 +149,83 @@ export default function App() {
       // `getCurrentWebview()` estoura na hora fora do Tauri (não há
       // `__TAURI_INTERNALS__`). Sem este try, o smoke no navegador — o cheque de
       // tema/idioma do padrão da suíte — morreria na tela branca.
+    }
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, []);
+
+  /* ---------------- título da janela (taskbar) ---------------- */
+
+  // O título nativo acompanha o projeto e o estado sujo — assim a barra de
+  // tarefas diz QUAL projeto está aberto e se tem alteração pendente, sem abrir a
+  // janela. (`core:window:allow-set-title` já está na capability.)
+  useEffect(() => {
+    const name = ed.projectPath ? baseName(ed.projectPath) : t("top.untitled");
+    const win = `${ed.dirty ? "● " : ""}${name} — LocalVideo`;
+    try {
+      void getCurrentWindow().setTitle(win).catch(() => {});
+    } catch {
+      /* fora do Tauri não há janela */
+    }
+  }, [ed.projectPath, ed.dirty]);
+
+  /* ---------------- fechar a janela sem perder trabalho ---------------- */
+
+  // O `guard` acima cobre Novo/Abrir/soltar-projeto, mas NÃO o fechamento da
+  // janela (o X, Alt+F4). Sem isto, fechar com cortes não salvos — ou no meio de
+  // uma exportação — jogava o trabalho fora calado. Registrar `onCloseRequested`
+  // transfere o fechar pro JS: por isso `core:window:allow-destroy` é obrigatória
+  // (já está na capability). O `preventDefault` é SÍNCRONO (antes de qualquer
+  // await) pra não correr com o fechamento; o `destroy` explícito só vem depois
+  // da resposta. Diálogo indisponível nunca deixa o app impossível de fechar.
+  useEffect(() => {
+    let deciding = false;
+    let cancelled = false;
+    let un: (() => void) | undefined;
+    const isExporting = () => {
+      const p = useExport.getState().phase;
+      return p === "cutting" || p === "joining" || p === "encoding";
+    };
+    try {
+      void getCurrentWindow()
+        .onCloseRequested(async (e) => {
+          const exporting = isExporting();
+          const s = useEditor.getState();
+          const dirty = s.dirty && timelineDuration(s.history.present) > 0;
+          if (!exporting && !dirty) return; // nada a perder: fecha normal
+          e.preventDefault();
+          if (deciding) return; // já há um diálogo aberto (clicou no X de novo)
+          deciding = true;
+          try {
+            const leave = await ask(exporting ? t("close.exporting") : t("close.dirty"), {
+              title: "LocalVideo",
+              kind: "warning",
+              okLabel: t("close.leave"),
+              cancelLabel: t("dlg.cancel"),
+            });
+            if (leave) {
+              if (isExporting()) useExport.getState().cancel();
+              await getCurrentWindow().destroy();
+            }
+          } catch {
+            await getCurrentWindow().destroy().catch(() => {});
+          } finally {
+            deciding = false;
+          }
+        })
+        .then((f) => {
+          // Mesmo cuidado do listener de drop: se a limpeza correu antes de a
+          // promessa resolver, desregistra na hora em vez de vazar o listener.
+          if (cancelled) f();
+          else un = f;
+        })
+        .catch(() => {
+          /* fora do Tauri não há janela pra interceptar */
+        });
+    } catch {
+      /* `getCurrentWindow()` estoura fora do Tauri (smoke no navegador) */
     }
     return () => {
       cancelled = true;

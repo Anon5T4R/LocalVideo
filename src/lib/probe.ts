@@ -73,10 +73,49 @@ export function frameMs(fps: number): number {
   return fps > 0 ? 1000 / fps : 1000 / FALLBACK_FPS;
 }
 
-/** Anda `frames` quadros a partir de `t` (setas), sem sair de `0..max`. */
+/**
+ * Anda `frames` quadros a partir de `t` (setas), sem sair de `0..max`.
+ *
+ * **Anda pela GRADE de quadros, não somando ms cru.** Um quadro dura 33,367 ms
+ * no NTSC (não um inteiro): somar isso ao playhead e arredondar a CADA passo
+ * fazia o erro de arredondamento acumular — depois de dezenas de setas o
+ * timecode saía de sincronia com o número de quadros andados (o "atraso de 1
+ * quadro" relatado). Recuperar o índice do quadro mais próximo e somar mantém N
+ * passos SEMPRE no quadro k+N, sem deriva (o casa com o `formatTimecode` abaixo).
+ */
 export function stepFrames(t: number, frames: number, fps: number, max: number): number {
-  const next = t + frames * frameMs(fps);
+  const fm = frameMs(fps);
+  const curFrame = Math.round(t / fm);
+  const next = (curFrame + frames) * fm;
   return Math.max(0, Math.min(Math.round(next), Math.round(max)));
+}
+
+/** Onde o playhead para depois de `dtMs` de RELÓGIO DE PAREDE correndo pelo
+ *  vazio, e se o filme acabou nesse passo. */
+export interface GapStep {
+  /** Novo playhead, em ms (inteiro, preso em `0..total`). */
+  playhead: number;
+  /** Bateu no fim do filme? (o chamador pausa e crava no `total`.) */
+  ended: boolean;
+}
+
+/**
+ * Quanto o playhead anda num quadro de animação enquanto está num BURACO (sem
+ * clipe embaixo). Diferente do play normal — ali quem manda o tempo é o
+ * `<video>`; no vazio não há `<video>`, então o tempo tem que vir do relógio de
+ * parede. `dtMs` é o tempo real desde o último quadro; `rate` a velocidade (só
+ * faz sentido > 0 aqui — a ré tem o seu próprio ticker).
+ *
+ * Puro e testado porque É a conta do "correr pelo vazio": um NLE não pula o
+ * buraco nem trava nele, ele deixa o tempo andar (tela preta) até o próximo
+ * clipe ou o fim. Se o passo cruzaria o fim, prende no `total` e sinaliza o fim
+ * — sem estourar pra além da duração do filme.
+ */
+export function gapAdvance(playhead: number, dtMs: number, rate: number, total: number): GapStep {
+  const step = dtMs * (rate > 0 ? rate : 1);
+  const next = playhead + step;
+  if (next >= total) return { playhead: Math.round(total), ended: true };
+  return { playhead: Math.max(0, Math.round(next)), ended: false };
 }
 
 /**
@@ -131,14 +170,24 @@ export function formatDuration(ms: number): string {
   return `${h > 0 ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}.${tenths}`;
 }
 
-/** `00:01:02:14` — timecode com QUADRO (o playhead; é o que NLE mostra). */
+/** `00:01:02:14` — timecode com QUADRO (o playhead; é o que NLE mostra).
+ *
+ * Decompõe a partir do ÍNDICE TOTAL de quadros (arredondado), não de `ms%1000`.
+ * O motivo é o mesmo do `stepFrames`: com quadro de 33,367 ms, `floor(33/33,367)`
+ * dava `0` — o playhead andava um quadro e a tela continuava mostrando `:00`
+ * (atraso de 1 quadro). Arredondar pro quadro mais próximo mostra o quadro certo,
+ * e derivar h:m:s:f do índice total impede o resto de `%1000` de acumular erro ao
+ * longo dos segundos. Timecode NÃO-DROP (fps arredondado pro inteiro), que é o
+ * padrão de NLE pra taxas fracionárias (29,97 conta 30 quadros por segundo). */
 export function formatTimecode(ms: number, fps: number): string {
   const f = fps > 0 ? fps : FALLBACK_FPS;
-  const total = Math.max(0, ms);
-  const frame = Math.floor((total % 1000) / frameMs(f));
-  const s = Math.floor(total / 1000) % 60;
-  const m = Math.floor(total / 60000) % 60;
-  const h = Math.floor(total / 3600000);
+  const fpsInt = Math.max(1, Math.round(f));
+  const totalFrames = Math.round(Math.max(0, ms) / frameMs(f));
+  const frame = totalFrames % fpsInt;
+  const totalSecs = Math.floor(totalFrames / fpsInt);
+  const s = totalSecs % 60;
+  const m = Math.floor(totalSecs / 60) % 60;
+  const h = Math.floor(totalSecs / 3600);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(h)}:${p(m)}:${p(s)}:${p(frame)}`;
 }

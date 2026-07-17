@@ -1,6 +1,6 @@
 [package]
 name = "localvideo"
-version = "0.3.0"
+version = "0.3.1"
 description = "LocalVideo — editor de vídeo 100% offline da suíte Local"
 authors = ["Taylor"]
 edition = "2021"
@@ -24,6 +24,10 @@ tauri = { version = "2", features = ["protocol-asset"] }
 # Escolher arquivo de vídeo pra importar e onde salvar o .tvproj. Sem isto o
 # app só abriria mídia por arrastar-e-soltar — meio produto.
 tauri-plugin-dialog = "2"
+# Depois de exportar, "Abrir vídeo" e "Mostrar na pasta": o opener resolve isso
+# com o app/gerenciador padrão do SO (o padrão da suíte — igual LocalMedia/
+# LocalFiles). Sem ele, o usuário exporta e fica sem saber ONDE o arquivo caiu.
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

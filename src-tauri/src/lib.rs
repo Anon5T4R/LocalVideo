@@ -41,6 +41,8 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_dialog::init())
+        // "Abrir vídeo" / "Mostrar na pasta" no fim do export (ver capability).
+        .plugin(tauri_plugin_opener::init())
         .manage(FfState::default())
         .setup(|app| {
             // O `assetProtocol.scope` do config nasce VAZIO de propósito (ver o

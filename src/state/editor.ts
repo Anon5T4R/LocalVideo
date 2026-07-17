@@ -566,6 +566,27 @@ export function baseName(path: string): string {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
+/**
+ * A PASTA que contém o arquivo — o alvo do "mostrar na pasta" quando o reveal
+ * nativo (que seleciona o arquivo) não está disponível e a gente cai pra só
+ * abrir a pasta. Puro e testado porque é o caminho que vai CRU pro SO: errar o
+ * separador (ou comer o último `\`) abriria a pasta errada, ou nenhuma.
+ *
+ * Não "escapa" nada: `openPath`/`revealItemInDir` recebem o caminho literal (o
+ * plugin não passa por shell), então um caminho com espaço/acento/`&` vai
+ * inteiro. O cuidado aqui é achar o corte certo, não citar a string.
+ */
+export function dirName(path: string): string {
+  const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  // Sem separador: é um nome solto, a "pasta" é o diretório atual (".").
+  if (i < 0) return ".";
+  // Raiz do Windows (`C:\arq`) ou do POSIX (`/arq`): mantém a barra pra não
+  // devolver `C:` (que o SO lê como "diretório atual da unidade C", não a raiz).
+  if (i === 0) return path.slice(0, 1);
+  if (path[i] === "\\" && path[i - 1] === ":") return path.slice(0, i + 1);
+  return path.slice(0, i);
+}
+
 type Setter = (partial: Partial<EditorState>) => void;
 type Getter = () => EditorState;
 

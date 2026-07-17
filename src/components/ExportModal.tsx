@@ -1,10 +1,12 @@
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { type ExportPresetId, type PlanReason } from "../lib/args";
 import { t } from "../lib/i18n";
 import { formatDuration } from "../lib/probe";
-import { baseName } from "../state/editor";
+import { baseName, dirName } from "../state/editor";
 import { plannedDuration, useExport } from "../state/export";
+import { useUi } from "../state/ui";
 
 /**
  * O modal de exportar.
@@ -159,21 +161,40 @@ function Done() {
   const ex = useExport();
   if (!ex.result) return null;
   const { compiled, plan } = ex.result;
+  const path = ex.result.path;
   const copy = plan?.kind === "copy";
   const doneWhy = compiled ? t("exp.doneCompile") : copy ? t("exp.doneCopy") : t("exp.doneEncode");
+
+  // "Abrir vídeo": entrega o arquivo ao player padrão do SO. "Mostrar na pasta":
+  // o reveal nativo abre o explorador COM o arquivo já selecionado; se ele
+  // falhar (SO sem suporte, arquivo sumiu), cai pra só abrir a pasta que o
+  // contém — melhor que não fazer nada. Só quando nem isso vai é que avisa.
+  const openFile = () => {
+    void openPath(path).catch(() => useUi.getState().pushToast("error", t("exp.openFailed")));
+  };
+  const revealFile = () => {
+    void revealItemInDir(path).catch(() => {
+      void openPath(dirName(path)).catch(() =>
+        useUi.getState().pushToast("error", t("exp.openFailed")),
+      );
+    });
+  };
+
   return (
     <div className="done">
       <div className="done-icon" aria-hidden>
         ✔
       </div>
       <h3>{t("exp.doneTitle")}</h3>
-      <p className="dest-path" title={ex.result.path}>
-        {baseName(ex.result.path)}
+      <p className="dest-path" title={path}>
+        {baseName(path)}
       </p>
       <p className="muted small">
         {doneWhy} {t("exp.doneTime", { time: formatDuration(ex.result.elapsedMs) })}
       </p>
-      <div className="modal-actions">
+      <div className="modal-actions done-actions">
+        <button onClick={openFile}>{t("exp.openFile")}</button>
+        <button onClick={revealFile}>{t("exp.revealFile")}</button>
         <button className="primary" onClick={() => ex.close()}>
           {t("dlg.ok")}
         </button>

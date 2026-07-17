@@ -1,10 +1,11 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { audioLayersAt, hasMixAudio } from "../lib/audiomix";
 import { colorToCanvasFilter, layersAt, needsComposite, type MediaLayer } from "../lib/compose";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
-import { formatDuration, formatTimecode } from "../lib/probe";
+import { formatDuration, formatTimecode, gapAdvance } from "../lib/probe";
 import {
   baseVideoTrack,
   clipEnd,
@@ -83,7 +84,26 @@ export default function Preview() {
   const gone = baseHit ? missing.includes(hitPath) : false;
   const fps = baseHit ? (media[hitPath]?.fps ?? 30) : 30;
   const baseExact = baseHit && !gone ? canDecodeExactly(hitPath) : false;
-  const src = baseHit && !gone ? convertFileSrc(hitPath) : "";
+
+  // O PRÓXIMO clipe de mídia da base à frente do playhead — só interessa quando
+  // se está num BURACO. Serve pra PRÉ-CARREGAR: apontamos o `<video>` (escondido)
+  // pra ele durante o vazio, com `preload="auto"`, pra quando o ticker chegar no
+  // clipe o play ser instantâneo. Sem isto, o `<video>` só ganhava `src` no
+  // limite do buraco e travava carregando do zero no meio da reprodução (o
+  // elemento fica em readyState 0 e o play não engata).
+  const nextBaseClip = useMemo(() => {
+    if (baseHit) return null;
+    let best: Clip | null = null;
+    for (const c of track?.clips ?? []) {
+      if (isMedia(c) && c.startMs >= playhead && (!best || c.startMs < best.startMs)) best = c;
+    }
+    return best;
+  }, [track, baseHit, playhead]);
+
+  // O src do `<video>`: o clipe atual quando há um; senão o próximo (aquecendo no
+  // buraco). String vazia só quando não há nem um nem outro (fim do filme).
+  const warmPath = nextBaseClip && !missing.includes(nextBaseClip.path!) ? nextBaseClip.path! : "";
+  const src = baseHit && !gone ? convertFileSrc(hitPath) : warmPath ? convertFileSrc(warmPath) : "";
 
   // Modo de pintura do canvas quando PARADO:
   //  - compor (várias camadas/filtros) se der pra decodificar tudo;
@@ -238,13 +258,55 @@ export default function Preview() {
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (playing && !gone && rate > 0) {
+    // `baseHit` é obrigatório aqui: no BURACO o `<video>` fica montado mas SEM
+    // src (ver o render). Chamar `play()` num elemento sem fonte REJEITA, e o
+    // `.catch` abaixo pausaria o filme no meio do vazio — quem toca o buraco é o
+    // ticker de wall-clock, não o `<video>`. Sem clipe embaixo: só pausa o vídeo.
+    if (playing && !gone && rate > 0 && baseHit) {
+      // Ao ASSUMIR um clipe já tocando (o caso do buraco: o `<video>` ganha src
+      // só agora, zerado), crava o tempo-fonte ANTES de tocar. Sem isto, um clipe
+      // aparado (srcIn > 0) tocaria do 0 e o `onTimeUpdate` puxaria o playhead
+      // pra trás. Só aqui (roda na TROCA de clipe, não a cada quadro), com folga
+      // pra não brigar com o play.
+      const want = baseHit.srcTime / 1000;
+      if (Math.abs(v.currentTime - want) > 0.15) v.currentTime = want;
       v.playbackRate = rate;
       void v.play().catch(() => setPlaying(false));
     } else {
       v.pause();
     }
   }, [playing, gone, rate, baseHit?.clip.id, setPlaying]);
+
+  // Correr PELO VAZIO (pra frente): quando o playhead está num buraco não há
+  // `<video>` pra tocar, então nada movia o tempo e o Espaço parecia morto. Um
+  // NLE de verdade não pula nem trava o buraco — deixa o tempo andar (tela
+  // preta) até cair no próximo clipe ou no fim. O relógio de parede é o motor.
+  //
+  // Só liga sem `baseHit` (o buraco) e com `rate > 0` (a ré tem o ticker acima);
+  // assim que o tempo cruza pra dentro de um clipe, `baseHit` deixa de ser nulo,
+  // este efeito se desmonta e o `<video>` assume — sem pulo nem piscada. O
+  // `playhead` NÃO entra nas deps de propósito: ele é lido do `getState()` a
+  // cada quadro, senão o efeito remontaria a cada tick e zeraria o `dt`.
+  useEffect(() => {
+    if (!playing || rate <= 0 || baseHit) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = now - last;
+      last = now;
+      const s = useEditor.getState();
+      const dur = timelineDuration(s.history.present);
+      const stepd = gapAdvance(s.playhead, dt, s.rate, dur);
+      s.seek(stepd.playhead);
+      if (stepd.ended) {
+        s.setPlaying(false);
+        return; // chegou ao fim do filme: para (não reagenda)
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, rate, baseHit]);
 
   // A ré, na mão: o playhead recua no relógio de parede, na velocidade pedida.
   useEffect(() => {
@@ -305,10 +367,24 @@ export default function Preview() {
     return !hasWebCodecs() ? t("preview.roughNoCodecs") : t("preview.roughContainer");
   }
 
+  // Há trilha de fundo pra mixar? Aviso honesto: a prévia AGORA toca a 2ª trilha
+  // (o buraco que a v0.3 fechou), mas amplificar acima de 100% só sai no export.
+  const mixNote = hasMixAudio(timeline, track?.id ?? null);
+
   const showVideo = baseHit && !gone && !doComposite;
+
+  // Buraco num filme que EXISTE: nem clipe embaixo, nem mídia sumida. A tela
+  // fica preta (o fundo do `.stage` já é #000) e o tempo corre por cima — não é
+  // "importe um vídeo" (isso é `total === 0`), é o vazio entre cortes.
+  const inGap = !baseHit && !gone && total > 0;
+  // Dá pra tocar? Filme não-vazio e não parado num arquivo sumido. Vale pro
+  // buraco também (corre pelo vazio) — por isso não exige `baseHit`.
+  const canPlay = total > 0 && !gone;
 
   return (
     <div className="card preview-card">
+      {/* O motor de áudio das trilhas de fundo — não desenha nada, só toca. */}
+      <PreviewAudioMixer />
       <div className="card-head">
         <strong>{t("preview.title")}</strong>
         <span className="muted small tabnum">
@@ -318,12 +394,21 @@ export default function Preview() {
       </div>
 
       <div className="stage">
-        {baseHit && !gone ? (
+        {gone ? (
+          <div className="stage-empty muted">{t("preview.gone")}</div>
+        ) : total > 0 ? (
           <>
+            {/* O `<video>` fica SEMPRE montado enquanto há filme — inclusive no
+                buraco (só escondido). Se ele desmontasse no vazio e remontasse ao
+                cavar no clipe, o elemento novo teria que carregar do zero e o play
+                travava no limite do buraco (readyState 0). Mantendo o MESMO
+                elemento, cair do vazio pro clipe é só uma troca de `src` — o
+                caminho de play que já funciona. `src=undefined` no buraco pra o
+                navegador não tentar carregar a própria página como mídia. */}
             <video
               ref={videoRef}
               className="stage-video"
-              src={src}
+              src={src || undefined}
               onTimeUpdate={onTimeUpdate}
               onEnded={() => setPlaying(false)}
               preload="auto"
@@ -336,16 +421,19 @@ export default function Preview() {
               className="stage-canvas"
               style={{ display: painted && !playing ? "block" : "none" }}
             />
+            {/* Buraco: um preto por cima do <video> escondido. Sem texto — o tempo
+                correndo no cabeçalho já diz que está tocando pelo vazio. */}
+            {inGap ? <div className="stage-empty" aria-label={t("preview.gap")} /> : null}
           </>
         ) : (
-          <div className="stage-empty muted">{gone ? t("preview.gone") : t("preview.empty")}</div>
+          <div className="stage-empty muted">{t("preview.empty")}</div>
         )}
       </div>
 
       <div className="preview-bar">
         <button
           onClick={() => useEditor.getState().nudgeRate(-1)}
-          disabled={!baseHit || gone}
+          disabled={!canPlay}
           title={t("sc.jkl")}
         >
           ◀◀ J
@@ -353,22 +441,126 @@ export default function Preview() {
         <button
           className="primary"
           onClick={() => setPlaying(!playing)}
-          disabled={!baseHit || gone}
+          disabled={!canPlay}
           title={playing ? t("preview.pause") : t("preview.play")}
         >
           {playing ? "❚❚" : "▶"} {playing ? t("preview.pause") : t("preview.play")}
         </button>
         <button
           onClick={() => useEditor.getState().nudgeRate(1)}
-          disabled={!baseHit || gone}
+          disabled={!canPlay}
           title={t("sc.jkl")}
         >
           L ▶▶
         </button>
         <span className="muted small">{quality}</span>
+        {mixNote ? (
+          <span className="muted small" title={t("preview.mixHint")}>
+            {t("preview.mix")}
+          </span>
+        ) : null}
       </div>
     </div>
   );
+}
+
+/**
+ * O motor de áudio da 2ª trilha (música de fundo, narração) na PRÉVIA.
+ *
+ * Não renderiza nada: conduz um `<audio>` por clipe de áudio de mix — todas as
+ * trilhas menos a base, cujo som já sai pelo `<video>` — em sincronia com o
+ * playhead, pra a mixagem se OUVIR antes do export. A parte pura (quais tocam,
+ * com que ganho) mora em `lib/audiomix.ts`, com as ressalvas de honestidade.
+ *
+ * Os `<audio>` são objetos imperativos (`new Audio()`), não JSX: som se comanda,
+ * não se declara, e um por CLIPE (chaveado pelo id) sobrevive à troca de clipe
+ * ativo sem recarregar o arquivo a cada quadro.
+ */
+function PreviewAudioMixer() {
+  const timeline = useEditor((s) => s.history.present);
+  const playing = useEditor((s) => s.playing);
+  const rate = useEditor((s) => s.rate);
+  const missing = useEditor((s) => s.missing);
+
+  const baseId = useMemo(() => baseVideoTrack(timeline)?.id ?? null, [timeline]);
+  const els = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+  // Fecha os <audio> de clipes que saíram da timeline (ou viraram a base).
+  useEffect(() => {
+    const alive = new Set<string>();
+    for (const tk of timeline.tracks) {
+      if (tk.id === baseId) continue;
+      for (const c of tk.clips) if (isMedia(c)) alive.add(c.id);
+    }
+    for (const [id, el] of els.current) {
+      if (!alive.has(id)) {
+        el.pause();
+        el.src = "";
+        els.current.delete(id);
+      }
+    }
+  }, [timeline, baseId]);
+
+  // Descarrega tudo ao desmontar (memória de áudio fora do alcance do GC).
+  useEffect(() => {
+    const map = els.current;
+    return () => {
+      for (const el of map.values()) {
+        el.pause();
+        el.src = "";
+      }
+      map.clear();
+    };
+  }, []);
+
+  // O laço que casa som e playhead. Só toca no play PRA FRENTE: a ré e o scrub
+  // em 2× seriam pitch picado sem valor (a base também não os mixa). Lê o estado
+  // por `getState()` a cada quadro pra não remontar o efeito a cada tick — e o
+  // `playhead` fica FORA das deps de propósito (senão remontaria 60×/s).
+  useEffect(() => {
+    if (!playing || rate <= 0) {
+      for (const el of els.current.values()) el.pause();
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      const s = useEditor.getState();
+      const layers = audioLayersAt(s.history.present, s.playhead, baseId).filter(
+        (l) => !missing.includes(l.path),
+      );
+      const wanted = new Set(layers.map((l) => l.clipId));
+      for (const [id, el] of els.current) if (!wanted.has(id)) el.pause();
+      for (const l of layers) {
+        let el = els.current.get(l.clipId);
+        if (!el) {
+          el = new Audio(convertFileSrc(l.path));
+          el.preload = "auto";
+          els.current.set(l.clipId, el);
+        }
+        el.volume = l.gain;
+        el.playbackRate = s.rate;
+        // Ressincroniza só quando DERIVA de verdade: o <audio> tem relógio
+        // próprio e cravar o tempo todo quadro cortaria o som. 0,25 s de folga.
+        const want = l.srcTimeMs / 1000;
+        if (Number.isFinite(want) && Math.abs(el.currentTime - want) > 0.25) {
+          try {
+            el.currentTime = want;
+          } catch {
+            /* fonte ainda carregando: o próximo quadro corrige */
+          }
+        }
+        if (el.paused) void el.play().catch(() => {});
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const el of els.current.values()) el.pause();
+    };
+  }, [playing, rate, baseId, missing]);
+
+  return null;
 }
 
 /** Resolução de saída da composição (a do 1º clipe de mídia de vídeo). */
