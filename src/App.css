@@ -1,0 +1,862 @@
+/* Superficies suavizadas: o fundo nao pode ser a coisa mais forte da tela.
+   Branco puro tem contraste maximo contra tudo e rouba o foco do accent, entao
+   o --panel virou off-white tingido com o matiz do --bg (nunca #fff) e o --bg
+   desceu ~4 pontos de L*. A escada bg < panel-2 < panel do app foi preservada. */
+:root {
+  --bg: #eaebf0;
+  --panel: #f7f9fe;
+  --panel-2: #eef0f3;
+  --text: #16202e;
+  --muted: #606b7b;
+  --border: #d8dde5;
+  /* Accent do LocalVideo: ciano #0ea5e9 (Record=violeta, Monitor=vermelho).
+     A tinta do botão primário é ESCURA porque o gradiente ciano é claro nas
+     duas pontas — texto branco em cima dele daria ~2,9:1 e reprovaria. */
+  --accent: #0ea5e9;
+  --accent-2: #38bdf8;
+  --accent-ink: #062a3d;
+  --sel-bg: #e0f2fe;
+  --danger: #dc2626;
+  --err-bg: #fef2f2;
+  --err-border: #fca5a5;
+  --warn-bg: #fdf4e6;
+  --warn-border: #e6c58a;
+  --shadow: 0 10px 30px rgba(20, 40, 90, 0.12);
+  --radius: 12px;
+}
+
+:root[data-theme="dark"] {
+  --bg: #191d25;
+  --panel: #202733;
+  --panel-2: #262e3c;
+  --text: #e7edf5;
+  --muted: #8695a8;
+  --border: #323c4b;
+  --accent: #38bdf8;
+  --accent-2: #7dd3fc;
+  --accent-ink: #032030;
+  --sel-bg: #0c2d43;
+  --danger: #f87171;
+  --err-bg: #2a1414;
+  --err-border: #7f1d1d;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- Temas nomeados (paletas fixas; sobrepõem o accent do app) ---- */
+:root[data-theme="nature"] {
+  --bg: #eef1e9;
+  --panel: #f8faf5;
+  --panel-2: #e4eade;
+  --text: #2e3a2e;
+  --muted: #647064;
+  --border: #dbe3d4;
+  --accent: #7a9e7e;
+  --accent-2: #e8b4c8;
+  --accent-ink: #1e2a1e;
+  --sel-bg: #e6efe1;
+  --danger: #c0492f;
+  --ok: #5a8f5e;
+  --warn-bg: #fdf4e6;
+  --warn-border: #e6c58a;
+  --err-bg: #fbecea;
+  --err-border: #e6a99b;
+  --shadow: 0 10px 30px rgba(60, 80, 50, 0.14);
+  --radius: 12px;
+  --term-bg: #f8faf5;
+}
+:root[data-theme="darkblue"] {
+  --bg: #16202e;
+  --panel: #1d2a3c;
+  --panel-2: #26374e;
+  --text: #e2e8f0;
+  --muted: #8595ad;
+  --border: #2d3f59;
+  --accent: #3b82f6;
+  --accent-2: #60a5fa;
+  --accent-ink: #ffffff;
+  --sel-bg: #1e3a5f;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --err-bg: #2a1414;
+  --err-border: #7f1d1d;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --radius: 12px;
+  --term-bg: #16202e;
+}
+:root[data-theme="calmgreen"] {
+  --bg: #eaf0e9;
+  --panel: #f7faf6;
+  --panel-2: #dfe8dd;
+  --text: #24302a;
+  --muted: #617066;
+  --border: #d5e0d3;
+  --accent: #4f7d5e;
+  --accent-2: #6fa07e;
+  --accent-ink: #ffffff;
+  --sel-bg: #dcebd9;
+  --danger: #c0492f;
+  --ok: #4f7d5e;
+  --warn-bg: #fbf3e3;
+  --warn-border: #e0c184;
+  --err-bg: #fbecea;
+  --err-border: #e6a99b;
+  --shadow: 0 10px 30px rgba(40, 70, 50, 0.14);
+  --radius: 12px;
+  --term-bg: #f7faf6;
+}
+:root[data-theme="pastelpink"] {
+  --bg: #f8ebf0;
+  --panel: #fdf6f9;
+  --panel-2: #f2dde6;
+  --text: #3a2a30;
+  --muted: #796771;
+  --border: #ecd3de;
+  --accent: #e8799f;
+  --accent-2: #f4a9c4;
+  --accent-ink: #3a2028;
+  --sel-bg: #fbe4ee;
+  --danger: #d84a6b;
+  --ok: #4f9d76;
+  --warn-bg: #fdf3e6;
+  --warn-border: #e9c78e;
+  --err-bg: #fdecef;
+  --err-border: #f0a9bc;
+  --shadow: 0 10px 30px rgba(120, 60, 90, 0.14);
+  --radius: 12px;
+  --term-bg: #fdf6f9;
+}
+:root[data-theme="punkprincess"] {
+  --bg: #1c1228;
+  --panel: #251733;
+  --panel-2: #32204a;
+  --text: #f0e6ff;
+  --muted: #9a86b5;
+  --border: #3a2850;
+  --accent: #ff2d95;
+  --accent-2: #2de2ff;
+  --accent-ink: #12061a;
+  --sel-bg: #33143a;
+  --danger: #ff5470;
+  --ok: #43e8a0;
+  --warn-bg: #2a1f12;
+  --warn-border: #7c5017;
+  --err-bg: #2a0f1a;
+  --err-border: #8a2444;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --radius: 12px;
+  --term-bg: #1c1228;
+}
+
+/* ---- Cor de TEXTO do accent, por tema ----
+   Bloco à parte de propósito: os 5 temas nomeados acima são cópia VERBATIM do
+   LocalRecord (fundos suavizados + --muted corrigido) e não se toca neles. O
+   problema é que `--accent` é feito pra PINTAR (borda, playhead, barra), e
+   pintura passa com 3:1 — texto precisa de 4.5:1. Usar o accent cru como cor
+   de letra reprovaria o rótulo do botão ativo em quase todo tema. */
+:root {
+  --accent-text: #0369a1;
+}
+:root[data-theme="dark"] {
+  --accent-text: #7dd3fc;
+}
+:root[data-theme="nature"] {
+  --accent-text: #3f6b46;
+}
+:root[data-theme="darkblue"] {
+  --accent-text: #93c5fd;
+}
+:root[data-theme="calmgreen"] {
+  --accent-text: #3d6349;
+}
+:root[data-theme="pastelpink"] {
+  --accent-text: #a83a63;
+}
+:root[data-theme="punkprincess"] {
+  --accent-text: #ff7ab8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+button.active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+button.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--accent-ink);
+  border: none;
+  font-weight: 600;
+}
+/* Um primário desabilitado não pode continuar gritando "clique aqui".
+ * `opacity: .55` dá conta de um botão de cor chapada, mas NÃO de um gradiente
+ * vivo: com a timeline vazia o "Exportar" ficava tão berrante quanto o
+ * habilitado, enquanto o "Salvar" do lado apagava direitinho. O olho lia
+ * "exportar é a ação óbvia agora" — e o clique não fazia nada. Sem gradiente,
+ * ele volta a parecer o que é. */
+button.primary:disabled {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+/* ---------- topo ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+}
+.tagline {
+  font-size: 12.5px;
+}
+.proj-name {
+  font-size: 12.5px;
+  padding-left: 10px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* O ponto de "não salvo": o aviso mais barato que existe, e o que o olho já
+   procura por reflexo em qualquer editor. */
+.dirty-dot {
+  color: var(--accent-text);
+  font-size: 18px;
+  line-height: 0;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.segmented {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.toolbar-fill {
+  flex: 1;
+}
+
+/* Aviso de runtime/mídia ausente: faixa no topo, não modal — o app abre e explica. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-border);
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+
+/* ---------- corpo ---------- */
+.grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-content: start;
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.tabnum {
+  font-variant-numeric: tabular-nums;
+}
+.about {
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-top: 10px;
+}
+
+/* ---------- estado vazio (ensina; não é caixa cinza) ---------- */
+.empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.empty-box {
+  text-align: center;
+  max-width: 470px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.empty-box h2 {
+  margin: 0;
+  font-size: 19px;
+}
+.empty-box p {
+  margin: 0;
+  line-height: 1.5;
+}
+.empty-icon {
+  font-size: 44px;
+  opacity: 0.85;
+}
+/* Arrastar por cima: a área inteira responde — senão o usuário não sabe se
+   pode soltar, e fica testando. */
+.empty.dropping,
+.grid.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  background: var(--sel-bg);
+}
+.shortcuts {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+kbd {
+  font: inherit;
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 5px;
+  color: var(--text);
+}
+
+/* ---------- prévia ---------- */
+.stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+}
+.stage-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+}
+/* O quadro exato (WebCodecs) por cima do <video>. Mesmo `object-fit` do vídeo:
+   os dois têm que ocupar EXATAMENTE o mesmo retângulo, senão a imagem "salta"
+   um pixel na troca entre parar e tocar — e o olho pega isso na hora. */
+.stage-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  text-align: center;
+}
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.preview-bar .muted {
+  margin-left: auto;
+  text-align: right;
+}
+
+/* ---------- exportar ---------- */
+.export-modal {
+  min-width: 460px;
+  max-width: 560px;
+}
+
+/* O cartão do plano: a cor diz o que vai acontecer antes de a pessoa ler. */
+.plan {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--panel);
+}
+.plan-fast {
+  border-left-color: var(--accent);
+}
+.plan-slow {
+  border-left-color: var(--muted);
+}
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.plan-icon {
+  font-size: 1.1em;
+}
+.plan p {
+  margin: 0;
+  line-height: 1.5;
+}
+.snap {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.snap .block {
+  grid-column: 2;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+.field > label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.dest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dest-path {
+  flex: 1;
+  min-width: 0;
+  /* Caminho longo não pode empurrar o modal pra fora da tela. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.field p {
+  margin: 6px 0 0;
+}
+
+.prog {
+  margin-bottom: 16px;
+}
+.prog-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+.prog-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.2s linear;
+}
+.prog-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.done {
+  text-align: center;
+}
+.done-icon {
+  font-size: 2.4em;
+  color: var(--accent);
+  line-height: 1;
+}
+.done h3 {
+  margin: 8px 0;
+}
+.done .dest-path {
+  display: inline-block;
+  max-width: 100%;
+}
+.done .modal-actions {
+  justify-content: center;
+  margin-top: 16px;
+}
+
+/* pares rótulo/valor do inspetor */
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.kv > span:last-child {
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- timeline ---------- */
+.tl {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 6px;
+}
+.tl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tl-zoom {
+  display: flex;
+  gap: 4px;
+}
+.tl-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.tl-inner {
+  position: relative;
+  min-width: 100%;
+  height: 118px;
+}
+.tl-ruler {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.tl-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  pointer-events: none;
+}
+.tl-tick i {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 7px;
+  background: var(--border);
+}
+.tl-tick em {
+  position: absolute;
+  top: 7px;
+  left: 3px;
+  font-size: 10px;
+  font-style: normal;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tl-track {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 96px;
+  padding: 6px 0;
+}
+.tl-clip {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+.tl-clip + .tl-clip {
+  margin-left: 2px;
+}
+.tl-clip.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tl-clip.dragging {
+  opacity: 0.45;
+}
+/* Mídia sumida: o clipe existe, mas listrado — o projeto não mente sobre o que
+   consegue mostrar. */
+.tl-clip.gone {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--err-bg),
+    var(--err-bg) 6px,
+    var(--panel-2) 6px,
+    var(--panel-2) 12px
+  );
+  border-color: var(--err-border);
+}
+.tl-clip.drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.tl-drop-end {
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  align-self: stretch;
+}
+.tl-thumbs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* `flex: 1 1 0` e não `0 0 90px`: as miniaturas se DIVIDEM a largura do clipe em
+ * partes iguais, em vez de cada uma cravar 90px. Com a largura fixa, um clipe de
+ * 318px cabia 3 fatias de 90 = 270px e os 48px que sobravam ficavam de fundo
+ * pelado — toda régua terminava com um rombo escuro antes da borda do clipe, e a
+ * emenda entre dois clipes parecia um buraco na timeline. O `cover` mantém a
+ * proporção do quadro; quem manda na CONTAGEM é o `slots` do Timeline.tsx. */
+.tl-thumbs img {
+  height: 100%;
+  flex: 1 1 0;
+  min-width: 0;
+  object-fit: cover;
+  opacity: 0.9;
+}
+.tl-clip-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* Alças de aparar: largas o bastante pro mouse achar sem mira de precisão. */
+.tl-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: transparent;
+}
+.tl-handle:hover,
+.tl-clip.sel .tl-handle {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.tl-handle.in {
+  left: 0;
+}
+.tl-handle.out {
+  right: 0;
+}
+/* O playhead atravessa a régua e os clipes: é a linha do "agora". */
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+}
+.tl-playhead i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 2px;
+  background: var(--danger);
+}
+.tl-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -5px;
+  border: 5px solid transparent;
+  border-top-color: var(--danger);
+}
+.tl-foot {
+  display: flex;
+  gap: 10px;
+}
+
+/* ---------- modal / toasts ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+  width: min(460px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+.modal h2 {
+  margin: 0 0 14px;
+  font-size: 17px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.toasts {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 200;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 9px 16px;
+  cursor: pointer;
+  max-width: 70vw;
+}
+.toast.ok {
+  border-color: var(--accent);
+}
+.toast.error {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+}
