@@ -11,7 +11,7 @@ import Timeline from "./components/Timeline";
 import Toasts from "./components/Toasts";
 import { t } from "./lib/i18n";
 import { stepFrames } from "./lib/probe";
-import { timeToClip, totalDuration } from "./lib/timeline";
+import { baseVideoTrack, clipCount, timelineDuration, timeToClip } from "./lib/timeline";
 import { baseName, useEditor } from "./state/editor";
 import { useExport } from "./state/export";
 import { useUi } from "./state/ui";
@@ -31,7 +31,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const empty = ed.history.present.clips.length === 0;
+  const empty = clipCount(ed.history.present) === 0;
 
   /* ---------------- arquivos ---------------- */
 
@@ -90,7 +90,7 @@ export default function App() {
    *  aqui primeiro. Sem projeto sujo, segue direto — o diálogo não aparece à toa. */
   const guard = useCallback(
     (action: () => void) => {
-      if (!ed.dirty || totalDuration(ed.history.present) === 0) action();
+      if (!ed.dirty || timelineDuration(ed.history.present) === 0) action();
       else setPending(() => action);
     },
     [ed.dirty, ed.history],
@@ -208,10 +208,10 @@ export default function App() {
         e.preventDefault();
         // Passo de UM QUADRO, na taxa do clipe que está debaixo do playhead —
         // não numa taxa média inventada. Com Shift, um segundo.
-        const hit = timeToClip(s.history.present, s.playhead);
-        const fps = hit ? (s.media[hit.clip.path]?.fps ?? 30) : 30;
+        const hit = timeToClip(baseVideoTrack(s.history.present), s.playhead);
+        const fps = hit ? (s.media[hit.clip.path!]?.fps ?? 30) : 30;
         const dir = e.key === "ArrowRight" ? 1 : -1;
-        const dur = totalDuration(s.history.present);
+        const dur = timelineDuration(s.history.present);
         s.setPlaying(false);
         s.seek(
           e.shiftKey
@@ -221,6 +221,10 @@ export default function App() {
       } else if (e.key.toLowerCase() === "s") {
         e.preventDefault();
         s.doSplit();
+      } else if (e.key.toLowerCase() === "t") {
+        // T = soltar um título no playhead (na trilha base).
+        e.preventDefault();
+        s.doAddTitle();
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         s.doRemove();
@@ -229,7 +233,7 @@ export default function App() {
         s.seek(0);
       } else if (e.key === "End") {
         e.preventDefault();
-        s.seek(totalDuration(s.history.present));
+        s.seek(timelineDuration(s.history.present));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -263,6 +267,13 @@ export default function App() {
         <button onClick={() => guard(() => void doOpen())}>{t("top.open")}</button>
         <button onClick={() => void doSave(false)} disabled={empty}>
           {t("top.save")}
+        </button>
+        <button
+          onClick={() => ed.doAddTitle()}
+          disabled={empty}
+          title={`${t("title.add")} (T)`}
+        >
+          T＋
         </button>
         <button onClick={() => void doImportMarkers()} disabled={empty} title={t("mk.import")}>
           ⚑
@@ -314,6 +325,9 @@ export default function App() {
               </li>
               <li>
                 <kbd>S</kbd> {t("sc.split")}
+              </li>
+              <li>
+                <kbd>T</kbd> {t("sc.addTitle")}
               </li>
               <li>
                 <kbd>Del</kbd> {t("sc.remove")}

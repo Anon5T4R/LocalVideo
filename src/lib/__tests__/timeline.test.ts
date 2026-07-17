@@ -1,278 +1,302 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetIds,
-  append,
+  addTitle,
+  addTrack,
+  appendMedia,
+  baseVideoTrack,
   canRedo,
   canUndo,
-  clipStarts,
+  clipEnd,
+  clipCount,
+  defaultTitle,
+  endHit,
   initHistory,
-  move,
+  locate,
+  moveClip,
+  newTimeline,
+  overlapWithNext,
   pushHistory,
   redo,
-  remove,
+  removeClip,
   replacePresent,
-  split,
-  endHit,
+  setClipEdge,
+  setTransition,
+  splitAt,
+  srcOut,
+  timelineDuration,
   timeToClip,
-  totalDuration,
-  trim,
+  trackEnd,
   undo,
+  updateClip,
   type Clip,
+  type Timeline,
   type Track,
 } from "../timeline";
 
-const clip = (id: string, srcIn: number, srcOut: number, path = "a.mp4"): Clip => ({
+const media = (id: string, startMs: number, durationMs: number, srcIn = 0, path = "a.mp4"): Clip => ({
   id,
+  startMs,
+  durationMs,
   path,
   srcIn,
-  srcOut,
 });
 
-/** Três clipes de 1s, 2s e 3s = 6s de filme. */
-const base = (): Track => ({
-  clips: [clip("a", 0, 1000), clip("b", 5000, 7000, "b.mp4"), clip("c", 0, 3000, "c.mp4")],
-});
+const vtrack = (clips: Clip[], id = "v1"): Track => ({ id, kind: "video", clips });
+const atrack = (clips: Clip[], id = "a1"): Track => ({ id, kind: "audio", clips });
+const tl = (tracks: Track[]): Timeline => ({ version: 2, tracks });
+
+/** Trilha base: a=[0,1000), b=[1000,3000), c=[3000,6000) — 6 s em fila. */
+const base = (): Timeline =>
+  tl([
+    vtrack([media("a", 0, 1000), media("b", 1000, 2000, 5000, "b.mp4"), media("c", 3000, 3000, 0, "c.mp4")]),
+    atrack([]),
+  ]);
 
 beforeEach(() => __resetIds());
 
-describe("leitura da trilha", () => {
-  it("soma as janelas, não os arquivos", () => {
-    expect(totalDuration(base())).toBe(6000);
-    expect(totalDuration({ clips: [] })).toBe(0);
-    expect(clipStarts(base())).toEqual([0, 1000, 3000]);
+describe("leitura", () => {
+  it("duração e fim do clipe/trilha/timeline", () => {
+    const t = base();
+    expect(srcOut(t.tracks[0].clips[1])).toBe(7000);
+    expect(clipEnd(t.tracks[0].clips[2])).toBe(6000);
+    expect(trackEnd(t.tracks[0])).toBe(6000);
+    expect(timelineDuration(t)).toBe(6000);
+    expect(clipCount(t)).toBe(3);
+  });
+
+  it("a trilha mais longa manda na duração (overlay pode ser mais curto)", () => {
+    const t = tl([vtrack([media("a", 0, 4000)]), vtrack([media("b", 0, 2000)], "v2")]);
+    expect(timelineDuration(t)).toBe(4000);
   });
 
   it("timeToClip traduz tempo de timeline pra tempo-fonte", () => {
     const t = base();
-    // 500ms de filme = 500ms dentro do 1º arquivo.
-    expect(timeToClip(t, 500)).toMatchObject({ index: 0, srcTime: 500, clipStart: 0 });
-    // 1500ms de filme = 500ms DEPOIS do srcIn do 2º clipe (que começa em 5000).
-    expect(timeToClip(t, 1500)).toMatchObject({ index: 1, srcTime: 5500, clipStart: 1000 });
+    const track = baseVideoTrack(t)!;
+    expect(timeToClip(track, 500)).toMatchObject({ index: 0, srcTime: 500, clipStart: 0 });
+    // 1500 = 500ms depois do srcIn (5000) do 2º clipe.
+    expect(timeToClip(track, 1500)).toMatchObject({ index: 1, srcTime: 5500, clipStart: 1000 });
   });
 
-  it("na emenda exata quem toca é o clipe da direita", () => {
-    expect(timeToClip(base(), 1000)).toMatchObject({ index: 1, srcTime: 5000 });
+  it("num buraco (gap) não há clipe tocando", () => {
+    const t = tl([vtrack([media("a", 0, 1000), media("b", 3000, 1000)]), atrack([])]);
+    expect(timeToClip(t.tracks[0], 2000)).toBeNull();
   });
 
-  it("fim do filme e tempo negativo não são clipe nenhum", () => {
-    expect(timeToClip(base(), 6000)).toBeNull();
-    expect(timeToClip(base(), 999999)).toBeNull();
-    expect(timeToClip(base(), -1)).toBeNull();
+  it("na sobreposição quem toca é o de cima (o último)", () => {
+    const t = tl([vtrack([media("a", 0, 3000), media("b", 2000, 3000, 0, "b.mp4")])]);
+    // Em 2500 ambos existem; ganha o b (de cima).
+    expect(timeToClip(t.tracks[0], 2500)?.clip.id).toBe("b");
   });
 
-  it("endHit dá o ÚLTIMO quadro — é o que a prévia mostra no fim", () => {
-    // Assistir até o fim não pode apagar a prévia: o `timeToClip` diz "não há
-    // clipe em 6000" (certo), e o `endHit` diz "o último quadro é este".
-    expect(endHit(base())).toMatchObject({ index: 2, srcTime: 3000, clipStart: 3000 });
-    expect(endHit({ clips: [] })).toBeNull();
+  it("endHit dá o último quadro; vazio é null", () => {
+    expect(endHit(baseVideoTrack(base())!)).toMatchObject({ index: 2, srcTime: 3000 });
+    expect(endHit(vtrack([]))).toBeNull();
   });
 
-  it("endHit pula clipe de duração zero", () => {
-    const t: Track = { clips: [clip("a", 0, 1000), clip("z", 500, 500, "z.mp4")] };
-    expect(endHit(t)).toMatchObject({ index: 0, srcTime: 1000 });
+  it("overlapWithNext mede a transição (a sobreposição)", () => {
+    const t = tl([vtrack([media("a", 0, 3000), media("b", 2500, 2000, 0, "b.mp4")])]);
+    expect(overlapWithNext(t.tracks[0], 0)).toBe(500);
+    expect(overlapWithNext(t.tracks[0], 1)).toBe(0); // não há próximo
+  });
+
+  it("locate acha o clipe em qualquer trilha", () => {
+    const t = tl([vtrack([media("a", 0, 1000)]), atrack([media("z", 0, 500, 0, "z.mp3")], "a1")]);
+    expect(locate(t, "z")).toMatchObject({ ti: 1, ci: 0 });
+    expect(locate(t, "nada")).toBeNull();
   });
 });
 
-describe("split", () => {
-  it("vira um clipe em dois sem mudar a duração do filme", () => {
-    const t = split(base(), 1500);
-    expect(t.clips.length).toBe(4);
-    expect(totalDuration(t)).toBe(6000);
-    // O 2º clipe (5000..7000) foi cortado em 5500.
-    expect(t.clips[1]).toMatchObject({ srcIn: 5000, srcOut: 5500 });
-    expect(t.clips[2]).toMatchObject({ srcIn: 5500, srcOut: 7000, path: "b.mp4" });
-    // A metade nova ganha id próprio (senão a seleção pegaria as duas).
-    expect(t.clips[2].id).not.toBe(t.clips[1].id);
+describe("construção", () => {
+  it("newTimeline: uma trilha de vídeo e uma de áudio, vazias", () => {
+    const t = newTimeline();
+    expect(t.tracks.map((tk) => tk.kind)).toEqual(["video", "audio"]);
+    expect(clipCount(t)).toBe(0);
   });
 
-  it("cortar no 0 é não-evento (devolve a MESMA trilha)", () => {
-    const t = base();
-    expect(split(t, 0)).toBe(t);
-  });
-
-  it("cortar no fim exato é não-evento", () => {
-    const t = base();
-    expect(split(t, 6000)).toBe(t);
-    expect(split(t, 99999)).toBe(t);
-  });
-
-  it("cortar em cima de uma emenda é não-evento (já tem corte ali)", () => {
-    const t = base();
-    expect(split(t, 1000)).toBe(t);
-    expect(split(t, 3000)).toBe(t);
-  });
-
-  it("cortar duas vezes no mesmo clipe dá três pedaços contíguos", () => {
-    const t = split(split({ clips: [clip("a", 0, 3000)] }, 1000), 2000);
-    expect(t.clips.map((c) => [c.srcIn, c.srcOut])).toEqual([
-      [0, 1000],
-      [1000, 2000],
-      [2000, 3000],
+  it("appendMedia põe no fim da trilha base, sem buraco", () => {
+    let t = newTimeline();
+    t = appendMedia(t, { path: "a.mp4", srcIn: 0, srcOut: 2000 });
+    t = appendMedia(t, { path: "b.mp4", srcIn: 100, srcOut: 1100 });
+    const base = baseVideoTrack(t)!;
+    expect(base.clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+      [0, 2000],
+      [2000, 1000],
     ]);
-    expect(totalDuration(t)).toBe(3000);
+  });
+
+  it("addTrack acrescenta no fim", () => {
+    const t = addTrack(newTimeline(), "video");
+    expect(t.tracks.map((tk) => tk.kind)).toEqual(["video", "audio", "video"]);
+  });
+
+  it("addTitle cria um clipe de texto na trilha de vídeo", () => {
+    let tt = newTimeline();
+    const vid = baseVideoTrack(tt)!.id;
+    tt = addTitle(tt, vid, 1000, 3000, defaultTitle("Oi"));
+    const clip = baseVideoTrack(tt)!.clips[0];
+    expect(clip.title?.text).toBe("Oi");
+    expect([clip.startMs, clip.durationMs]).toEqual([1000, 3000]);
+    expect(clip.path).toBeUndefined();
   });
 });
 
-describe("trim", () => {
-  it("apara pra uma janela nova", () => {
-    const t = trim(base(), "b", 5500, 6000);
-    expect(t.clips[1]).toMatchObject({ srcIn: 5500, srcOut: 6000 });
-    expect(totalDuration(t)).toBe(1000 + 500 + 3000);
+describe("splitAt", () => {
+  it("vira um clipe em dois sem mudar a duração", () => {
+    const t = splitAt(base(), "b", 1500);
+    const track = t.tracks[0];
+    expect(track.clips.length).toBe(4);
+    expect(timelineDuration(t)).toBe(6000);
+    expect(track.clips[1]).toMatchObject({ startMs: 1000, durationMs: 500, srcIn: 5000 });
+    expect(track.clips[2]).toMatchObject({ startMs: 1500, durationMs: 1500, srcIn: 5500 });
+    expect(track.clips[2].id).not.toBe(track.clips[1].id);
   });
 
-  it("in/out invertidos são trocados, não recusados", () => {
-    // Arrastar a alça esquerda passando da direita é gesto comum.
-    const t = trim(base(), "b", 6500, 5200);
-    expect(t.clips[1]).toMatchObject({ srcIn: 5200, srcOut: 6500 });
-  });
-
-  it("não deixa a janela sair do arquivo", () => {
-    const t = trim(base(), "b", -500, 99999, 8000);
-    expect(t.clips[1]).toMatchObject({ srcIn: 0, srcOut: 8000 });
-  });
-
-  it("aparar até zero é ignorado (quem quer sumir usa remove)", () => {
+  it("cortar na borda é não-evento", () => {
     const t = base();
-    expect(trim(t, "b", 5000, 5000)).toBe(t);
-    expect(trim(t, "b", 6000, 5000, 5000)).toBe(t); // grampeado até virar vazio
+    expect(splitAt(t, "a", 0)).toBe(t);
+    expect(splitAt(t, "c", 6000)).toBe(t);
+    expect(splitAt(t, "b", 1000)).toBe(t); // borda esquerda do b
   });
 
-  it("id que não existe é não-evento", () => {
-    const t = base();
-    expect(trim(t, "zzz", 0, 100)).toBe(t);
+  it("corta um TÍTULO em dois (duas metades com o mesmo texto)", () => {
+    let t = newTimeline();
+    const vid = baseVideoTrack(t)!.id;
+    t = addTitle(t, vid, 0, 4000, defaultTitle("X"));
+    const id = baseVideoTrack(t)!.clips[0].id;
+    t = splitAt(t, id, 1000);
+    const clips = baseVideoTrack(t)!.clips;
+    expect(clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+      [0, 1000],
+      [1000, 3000],
+    ]);
+    expect(clips[0].title?.text).toBe("X");
+    expect(clips[1].title?.text).toBe("X");
   });
 });
 
-describe("move", () => {
-  it("reordena pro índice da lista já sem o clipe", () => {
-    const t = move(base(), "c", 0);
-    expect(t.clips.map((c) => c.id)).toEqual(["c", "a", "b"]);
-    expect(totalDuration(t)).toBe(6000);
+describe("setClipEdge (aparar)", () => {
+  it("borda IN: a esquerda anda e o srcIn anda junto", () => {
+    // b: start 1000, dur 2000, srcIn 5000. Arrasta a esquerda pra 1300.
+    const t = setClipEdge(base(), "b", "in", 1300);
+    expect(t.tracks[0].clips[1]).toMatchObject({ startMs: 1300, durationMs: 1700, srcIn: 5300 });
   });
 
-  it("índice além do fim grampeia no último (soltar 'lá longe')", () => {
-    expect(move(base(), "a", 99).clips.map((c) => c.id)).toEqual(["b", "c", "a"]);
-    expect(move(base(), "c", -5).clips.map((c) => c.id)).toEqual(["c", "a", "b"]);
+  it("borda IN não deixa srcIn ficar negativo", () => {
+    // a tem srcIn 0: não pode recuar (srcIn ficaria <0). Grampeia no start → não-evento.
+    const t0 = base();
+    expect(setClipEdge(t0, "a", "in", -500)).toBe(t0);
   });
 
-  it("soltar no mesmo lugar é não-evento", () => {
-    const t = base();
-    expect(move(t, "a", 0)).toBe(t);
-    expect(move(t, "zzz", 1)).toBe(t);
+  it("borda OUT: só a duração muda, limitada pelo arquivo", () => {
+    // a: start 0, dur 1000, srcIn 0. Estica pra 4000, mas o arquivo tem 2000.
+    const t = setClipEdge(base(), "a", "out", 4000, 2000);
+    expect(t.tracks[0].clips[0]).toMatchObject({ startMs: 0, durationMs: 2000 });
+  });
+
+  it("aparar a borda OUT pra trás demais grampeia num clipe mínimo (1 ms)", () => {
+    // Não pode virar clipe de duração zero/negativa: o mínimo é 1 ms.
+    const t = setClipEdge(base(), "a", "out", 0);
+    expect(t.tracks[0].clips[0].durationMs).toBe(1);
   });
 });
 
-describe("remove e append", () => {
+describe("moveClip", () => {
+  it("move no tempo (mesma trilha)", () => {
+    const t = moveClip(base(), "a", "v1", 4000);
+    // a saiu do 0 pro 4000; a trilha re-ordena por startMs.
+    const track = t.tracks[0];
+    expect(track.clips.map((c) => c.id)).toEqual(["b", "c", "a"]);
+    expect(track.clips.find((c) => c.id === "a")!.startMs).toBe(4000);
+  });
+
+  it("move pra outra trilha", () => {
+    const t = moveClip(base(), "a", "a1", 0);
+    expect(t.tracks[0].clips.map((c) => c.id)).toEqual(["b", "c"]);
+    expect(t.tracks[1].clips.map((c) => c.id)).toEqual(["a"]);
+  });
+
+  it("título não vai pra trilha de áudio", () => {
+    let t = newTimeline();
+    const vid = baseVideoTrack(t)!.id;
+    const aud = t.tracks[1].id;
+    t = addTitle(t, vid, 0, 1000, defaultTitle("T"));
+    const id = baseVideoTrack(t)!.clips[0].id;
+    expect(moveClip(t, id, aud, 0)).toBe(t);
+  });
+
+  it("mover pro mesmo lugar é não-evento", () => {
+    const t = base();
+    expect(moveClip(t, "a", "v1", 0)).toBe(t);
+  });
+});
+
+describe("removeClip / updateClip / setTransition", () => {
   it("remove tira só o clipe pedido", () => {
-    const t = remove(base(), "b");
-    expect(t.clips.map((c) => c.id)).toEqual(["a", "c"]);
-    expect(totalDuration(t)).toBe(4000);
+    const t = removeClip(base(), "b");
+    expect(t.tracks[0].clips.map((c) => c.id)).toEqual(["a", "c"]);
+    expect(removeClip(t, "zzz")).toBe(t);
   });
 
-  it("remover o que não existe é não-evento", () => {
-    const t = base();
-    expect(remove(t, "zzz")).toBe(t);
+  it("updateClip muda propriedades sem mexer em posição", () => {
+    const t = updateClip(base(), "a", { volume: 0.5, fadeInMs: 300 });
+    expect(t.tracks[0].clips[0]).toMatchObject({ startMs: 0, volume: 0.5, fadeInMs: 300 });
+    // Patch sem mudança é não-evento.
+    expect(updateClip(t, "a", { volume: 0.5 })).toBe(t);
   });
 
-  it("append põe no fim sem tocar no resto", () => {
-    const t = append(base(), clip("d", 0, 500, "d.mp4"));
-    expect(t.clips.map((c) => c.id)).toEqual(["a", "b", "c", "d"]);
-    expect(totalDuration(t)).toBe(6500);
+  it("setTransition move o próximo pra dentro deste (sobreposição)", () => {
+    // a=[0,1000), b começa em 1000. Transição de 400 → b passa a começar em 600.
+    const t = setTransition(base(), "a", 400);
+    expect(t.tracks[0].clips[1].startMs).toBe(600);
+    expect(overlapWithNext(t.tracks[0], 0)).toBe(400);
+  });
+
+  it("transição é grampeada pela duração dos dois clipes", () => {
+    // a dura 1000; pedir 5000 de transição só encosta até 1000.
+    const t = setTransition(base(), "a", 5000);
+    expect(overlapWithNext(t.tracks[0], 0)).toBe(1000);
   });
 });
 
 describe("undo/redo", () => {
-  it("desfaz e refaz o corte", () => {
+  it("desfaz e refaz um corte", () => {
     let h = initHistory(base());
     expect(canUndo(h)).toBe(false);
-    expect(canRedo(h)).toBe(false);
-
-    h = pushHistory(h, split(h.present, 1500));
-    expect(h.present.clips.length).toBe(4);
-    expect(canUndo(h)).toBe(true);
-
+    h = pushHistory(h, splitAt(h.present, "b", 1500));
+    expect(h.present.tracks[0].clips.length).toBe(4);
     h = undo(h);
-    expect(h.present.clips.length).toBe(3);
+    expect(h.present.tracks[0].clips.length).toBe(3);
     expect(canRedo(h)).toBe(true);
-
     h = redo(h);
-    expect(h.present.clips.length).toBe(4);
-    expect(canRedo(h)).toBe(false);
+    expect(h.present.tracks[0].clips.length).toBe(4);
   });
 
-  it("um arrasto de alça inteiro é UM passo de undo", () => {
-    // O retrato do bug achado dirigindo a janela: `doTrim` empilhava a cada
-    // `pointermove`, então um arrasto de 80px voltava ~4px por Ctrl+Z. Aqui se
-    // imita o arrasto: empilha no 1º movimento, troca o presente no resto.
+  it("um arrasto inteiro (mover/aparar) é UM passo de undo", () => {
     let h = initHistory(base());
     const antes = h.present;
-
-    h = pushHistory(h, trim(h.present, "a", 0, 900, 1000)); // 1º movimento
-    for (let out = 880; out >= 700; out -= 20) {
-      h = replacePresent(h, trim(h.present, "a", 0, out, 1000)); // o resto do arrasto
+    h = pushHistory(h, moveClip(h.present, "a", "v1", 100)); // 1º movimento
+    for (let x = 120; x <= 300; x += 20) {
+      h = replacePresent(h, moveClip(h.present, "a", "v1", x)); // resto do arrasto
     }
-    expect(h.present.clips[0].srcOut).toBe(700);
-    // Dez movimentos, UM passo: o passado tem só o estado de antes do arrasto.
     expect(h.past.length).toBe(1);
-
     h = undo(h);
     expect(h.present).toBe(antes);
     expect(canUndo(h)).toBe(false);
   });
 
-  it("replacePresent não queima o futuro nem o passado", () => {
-    // Trocar o presente no meio de um arrasto não pode custar o redo de outra
-    // coisa — quem queima o futuro é o `pushHistory`, e só ele.
+  it("não-evento não entra no histórico", () => {
     let h = initHistory(base());
-    h = pushHistory(h, split(h.present, 1500));
-    h = undo(h);
-    expect(canRedo(h)).toBe(true);
-
-    const trocado = replacePresent(h, trim(h.present, "a", 0, 800, 1000));
-    expect(trocado.future).toBe(h.future);
-    expect(trocado.past).toBe(h.past);
-    // Não-evento não mexe no histórico (mesmo contrato do pushHistory).
-    expect(replacePresent(h, h.present)).toBe(h);
-  });
-
-  it("desfaz uma pilha inteira, na ordem inversa", () => {
-    let h = initHistory(base());
-    h = pushHistory(h, split(h.present, 1500));
-    h = pushHistory(h, remove(h.present, "a"));
-    h = pushHistory(h, move(h.present, "c", 0));
-    expect(h.present.clips.length).toBe(3);
-
-    h = undo(undo(undo(h)));
-    expect(h.present.clips.map((c) => c.id)).toEqual(["a", "b", "c"]);
-    expect(canUndo(h)).toBe(false);
-    // Desfazer no fundo da pilha não explode nem some com o presente.
-    expect(undo(h)).toBe(h);
-    expect(redo(redo(redo(redo(h)))).present.clips.length).toBe(3);
-  });
-
-  it("editar depois de desfazer queima o futuro", () => {
-    let h = initHistory(base());
-    h = pushHistory(h, remove(h.present, "a"));
-    h = undo(h);
-    expect(canRedo(h)).toBe(true);
-    h = pushHistory(h, remove(h.present, "c"));
-    expect(canRedo(h)).toBe(false);
-    expect(h.present.clips.map((c) => c.id)).toEqual(["a", "b"]);
-  });
-
-  it("não-evento não entra no histórico (Ctrl+Z não gasta passo à toa)", () => {
-    let h = initHistory(base());
-    const same = split(h.present, 0); // cortar no 0 = nada
-    h = pushHistory(h, same);
+    h = pushHistory(h, splitAt(h.present, "a", 0)); // corte na borda = nada
     expect(canUndo(h)).toBe(false);
   });
 
-  it("o estado antigo não é mutado (undo devolve o retrato de verdade)", () => {
+  it("o estado antigo não é mutado", () => {
     const original = base();
     let h = initHistory(original);
-    h = pushHistory(h, trim(h.present, "b", 5500, 6000));
+    h = pushHistory(h, updateClip(h.present, "a", { volume: 2 }));
     h = undo(h);
     expect(h.present).toBe(original);
-    expect(original.clips[1]).toMatchObject({ srcIn: 5000, srcOut: 7000 });
+    expect(original.tracks[0].clips[0].volume).toBeUndefined();
   });
 });

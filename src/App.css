@@ -632,7 +632,8 @@ kbd {
 .tl-inner {
   position: relative;
   min-width: 100%;
-  height: 118px;
+  /* Altura cresce com as trilhas (v0.2): ruler + N lanes. */
+  height: auto;
 }
 .tl-ruler {
   position: relative;
@@ -795,6 +796,124 @@ kbd {
 .tl-foot {
   display: flex;
   gap: 10px;
+}
+
+/* ---------- timeline v0.2: trilhas empilhadas ---------- */
+.tl-lane {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.tl-lane.audio {
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg));
+}
+.tl-lane-badge {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 11px;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.6;
+}
+/* Na v0.2 o clipe é POSICIONADO no tempo (left = startMs), não empilhado por
+   flex. Por isso vira absoluto dentro da lane. */
+.tl-lane .tl-clip {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  margin: 0;
+}
+.tl-clip.title {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.tl-clip.muted-clip {
+  opacity: 0.6;
+}
+.tl-title-chip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  pointer-events: none;
+}
+.tl-title-chip span {
+  font-weight: 600;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A alça de transição vive na borda DIREITA, à frente do próximo clipe. */
+.tl-handle.trans {
+  right: -5px;
+  width: 12px;
+  cursor: col-resize;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 3;
+}
+.tl-handle.trans.on {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.tl-handle.trans em {
+  font-style: normal;
+  font-size: 9px;
+  margin-top: 2px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  background: var(--panel);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+/* ---------- inspetor (painel de propriedades) ---------- */
+.inspector .fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.inspector .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+.inspector .field > span {
+  font-weight: 600;
+  color: var(--muted);
+}
+.inspector .field-row {
+  display: flex;
+  gap: 10px;
+}
+.inspector .field-row .field {
+  flex: 1;
+}
+.inspector .field-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.inspector input[type="range"] {
+  width: 100%;
+}
+.inspector input[type="color"] {
+  width: 100%;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.inspector .block {
+  width: 100%;
+  margin-top: 4px;
 }
 
 /* ---------- modal / toasts ---------- */

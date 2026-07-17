@@ -65,7 +65,10 @@ export type PlanReason =
   /** Clipes de formatos diferentes: o concat demuxer exige codec/tamanho iguais. */
   | { code: "encode-mixed-format" }
   /** A sonda de quadros-chave não respondeu — sem saber, não dá pra arriscar. */
-  | { code: "encode-no-keyframe-data"; path: string };
+  | { code: "encode-no-keyframe-data"; path: string }
+  /** A timeline usa recursos da v0.2 (2ª trilha, transição, título, fade,
+   *  volume): não é concat, é o compilador de `filter_complex`. */
+  | { code: "encode-multitrack" };
 
 export interface ExportPlan {
   kind: "copy" | "encode";
@@ -475,6 +478,350 @@ export function encodeArgs(
     out,
   );
   return args;
+}
+
+/* ================================================================== */
+/* v0.2 — o COMPILADOR timeline → filter_complex                       */
+/* ================================================================== */
+
+/**
+ * A grande mudança da v0.2. A v0.1 exportava por `concat` (clipes em fila).
+ * Multitrilha, transição, título e fade **não são concat** — são um GRAFO. Este
+ * bloco é, no fundo, um pequeno compilador: recebe a timeline (posições, trilhas,
+ * títulos, áudio) e cospe o `-filter_complex` que o ffmpeg entende. É o maior
+ * risco da fase, então é TS puro e cada operador tem teste cravando o vetor.
+ *
+ * ─── A ideia central: compor por OVERLAY sobre um fundo preto ────────────────
+ *
+ * Em vez de tentar casar `xfade`+`concat`+`overlay` num grafo que ninguém lê, a
+ * gente pinta tudo por cima de um `color=black` do tamanho do filme:
+ *
+ * - **posição no tempo** (`startMs`) = deslocar o PTS do clipe e ligar o overlay
+ *   só na janela `[start,end)` (`enable='between(...)'`). Buraco entre clipes =
+ *   o preto do fundo aparece. Sai de graça.
+ * - **trilhas empilhadas** = overlays em cima de overlays, de baixo pra cima.
+ * - **crossfade** = o clipe de cima ENTRA com alfa (fade-in no canal alfa) sobre
+ *   a sobreposição; o de baixo continua aparecendo por baixo. O olho vê um
+ *   dissolve. Não precisa de `xfade` — a sobreposição É a transição (ver o
+ *   modelo em `timeline.ts`).
+ * - **título** = `drawtext` direto no acumulado, ligado na janela do título.
+ *
+ * O áudio é a parte simétrica: cada clipe com som vira um fluxo atrasado pro seu
+ * `startMs` (`adelay`), com volume/fade, e todos entram num `amix`. Sobreposição
+ * na mesma trilha vira fade cruzado (o de baixo esvai, o de cima cresce), casando
+ * com o crossfade do vídeo.
+ */
+
+import type { Clip, Timeline } from "./timeline";
+
+/** O que o compilador precisa saber de cada arquivo-fonte. Reusa o `SourceInfo`
+ *  de cima — width/height/fps/hasAudio bastam pra normalizar e decidir o áudio. */
+export type MediaSources = Record<string, SourceInfo>;
+
+/** Opções de saída (mesmos padrões do `encodeArgs`). */
+export interface CompileOptions {
+  crf?: number;
+  preset?: string;
+  /** Caminho ABSOLUTO da fonte embarcada (o ffmpeg não acha fonte sozinho no
+   *  Windows). Obrigatório se houver título; o Rust resolve e passa. */
+  fontPath?: string;
+}
+
+/**
+ * Escapa o texto de um `drawtext`. É a fonte de bug mais clássica do ffmpeg, e
+ * por isso tem teste E prova empírica (um render com `:'\%` no texto, frame
+ * extraído e olhado).
+ *
+ * São DOIS parsers em cima do valor, e o pulo do gato é a ORDEM em que agem: o
+ * filtergraph tira as aspas simples PRIMEIRO e só então o parser de opções do
+ * drawtext vê o resto — então um `:` "protegido" pela aspa continua partindo a
+ * opção (foi o bug real: `fontfile='C:/...'` quebrava em `/...`). A saída então
+ * vai entre aspas simples (o filtergraph mantém o conteúdo literal, sem mexer nas
+ * barras) E com os especiais escapados pro parser de opções que vem depois:
+ *  1. contrabarra → `\\` (escape do parser de opções) — PRIMEIRO;
+ *  2. `:` → `\:` (senão parte a opção do drawtext, mesmo dentro de aspas);
+ *  3. `%` → `\%` (o drawtext expande `%{...}` como no strftime);
+ *  4. aspa simples → `'\''` (fecha a aspa do filtergraph, escapa, reabre) — por
+ *     ÚLTIMO, pra sua barra não ser dobrada pelo passo 1.
+ * (Comprovado com ffmpeg real: só assim o frame com `:'\%` sai com o texto.)
+ */
+export function drawtextEscape(s: string): string {
+  // Comprovado com ffmpeg real (frame extraído e olhado), para o valor indo
+  // ENTRE aspas simples no filtergraph. A aspa é a parte chata: como não cabe
+  // aspa dentro de aspas simples, a gente FECHA a aspa, emite a aspa escapada
+  // pros dois níveis (`\\\'` → `\'` → `'`), e REABRE. Ordem: barra, dois-pontos,
+  // porcento e — por último — a aspa (pra suas barras não serem tocadas).
+  return s
+    .replace(/\\/g, "\\\\") // `\` literal → chega como `\`
+    .replace(/:/g, "\\:") // sobrevive ao parser de opções do drawtext
+    .replace(/%/g, "\\\\%") // chega ao drawtext como `\%` (escape de porcento)
+    .replace(/'/g, "'\\\\\\''"); // fecha aspa, `\'` escapado, reabre
+}
+
+/** Envolve um caminho de fonte pro `fontfile` do drawtext: barra normal (o `\`
+ *  do Windows é escape) e — o gotcha do Windows — o `:` do `C:` escapado como
+ *  `\:` DENTRO das aspas, pra o parser de opções do drawtext não partir ali. */
+function fontfileArg(path: string): string {
+  const p = path.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "'\\\\\\''");
+  return `'${p}'`;
+}
+
+/** Geometria/fps de saída: a do PRIMEIRO clipe de mídia da trilha base é "o
+ *  vídeo" pro usuário; o fps é o MAIOR (baixar joga quadro fora de vez). */
+function targetFormat(tl: Timeline, sources: MediaSources): { w: number; h: number; fps: number } {
+  let w = 0;
+  let h = 0;
+  let fps = 0;
+  for (const track of tl.tracks) {
+    for (const c of track.clips) {
+      if (c.path === undefined) continue;
+      const s = sources[c.path];
+      if (!s) continue;
+      if (w === 0 && track.kind === "video") {
+        w = s.width;
+        h = s.height;
+      }
+      fps = Math.max(fps, s.fps || 0);
+    }
+  }
+  return { w: w || 1920, h: h || 1080, fps: fps || 30 };
+}
+
+/** A janela `[start,end)` do clipe na timeline, em segundos com 3 casas. */
+function span(c: Clip): { s: string; e: string } {
+  return { s: secs(c.startMs), e: secs(c.startMs + c.durationMs) };
+}
+
+/** Y do título conforme a âncora (expressão do drawtext, com `text_h`/`h`). */
+function titleY(anchor: string): string {
+  if (anchor === "top") return "(h*0.08)";
+  if (anchor === "center") return "(h-text_h)/2";
+  return "(h-text_h-h*0.08)"; // bottom
+}
+
+/**
+ * Sobreposição (crossfade) entre dois clipes vizinhos de uma trilha, em ms.
+ * Igual ao `overlapWithNext` do `timeline.ts`, mas local pro compilador não
+ * depender do módulo de UI. Zero quando não se cruzam.
+ */
+function overlapMs(a: Clip, b: Clip): number {
+  const ov = a.startMs + a.durationMs - b.startMs;
+  return Math.max(0, Math.min(ov, a.durationMs, b.durationMs));
+}
+
+/**
+ * O compilador. Devolve o vetor COMPLETO de args do ffmpeg (entradas +
+ * `-filter_complex` + mapeamento + codec). Função pura — é o coração testável.
+ *
+ * Precondição: a timeline tem ao menos um clipe. O caminho degenerado (1 trilha,
+ * em fila, sem nada da v0.2) NÃO passa por aqui — vai pelo `-c copy` do
+ * `planExport`, que continua instantâneo (ver `degenerateClips`).
+ */
+export function filterComplexArgs(
+  tl: Timeline,
+  sources: MediaSources,
+  out: string,
+  opts: CompileOptions = {},
+): string[] {
+  const crf = opts.crf ?? 20;
+  const preset = opts.preset ?? "veryfast";
+  const { w, h, fps } = targetFormat(tl, sources);
+
+  // Duração do filme = a trilha mais longa (o fundo preto tem essa duração).
+  let total = 0;
+  for (const track of tl.tracks) {
+    for (const c of track.clips) total = Math.max(total, c.startMs + c.durationMs);
+  }
+
+  const args: string[] = [];
+  // Uma entrada `-i` por clipe de MÍDIA (mesmo repetindo arquivo — grafo legível
+  // vale mais que grafo esperto; reabrir custa quase nada). Título não tem `-i`.
+  const inputIndex = new Map<string, number>(); // clip.id -> índice de -i
+  for (const track of tl.tracks) {
+    for (const c of track.clips) {
+      if (c.path === undefined) continue;
+      inputIndex.set(c.id, args.length / 2 | 0);
+      args.push("-i", c.path);
+    }
+  }
+
+  const parts: string[] = [];
+
+  /* ---------------- VÍDEO ---------------- */
+
+  // Há vídeo pra compor? (clipe de mídia OU título numa trilha de vídeo)
+  const hasVideo = tl.tracks.some(
+    (t) => t.kind === "video" && t.clips.some((c) => c.path !== undefined || c.title !== undefined),
+  );
+
+  let vLabel: string | null = null;
+  if (hasVideo) {
+    // O fundo: preto do tamanho do filme, no fps e resolução de saída.
+    parts.push(`color=c=black:s=${w}x${h}:r=${fps}:d=${secs(total)}[vbase]`);
+    let acc = "[vbase]";
+    let k = 0;
+
+    for (const track of tl.tracks) {
+      if (track.kind !== "video") continue;
+      track.clips.forEach((c, ci) => {
+        const { s, e } = span(c);
+
+        if (c.path !== undefined) {
+          // Clipe de mídia: recorta no tempo do arquivo, rebobina, normaliza
+          // geometria/fps, aplica alfa (crossfade + opacidade) e desloca pro
+          // `startMs`; depois entra por overlay ligado só na janela do clipe.
+          const idx = inputIndex.get(c.id)!;
+          const info = sources[c.path];
+          const si = secs(c.srcIn ?? 0);
+          const so = secs((c.srcIn ?? 0) + c.durationMs);
+          const vf = [`trim=start=${si}:end=${so}`, "setpts=PTS-STARTPTS"];
+          if (!info || info.width !== w || info.height !== h) {
+            vf.push(
+              `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
+              `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+            );
+          }
+          vf.push("setsar=1", `fps=${fps}`);
+
+          // Crossfade: se cruza o clipe de MÍDIA anterior da trilha, entra com
+          // fade no alfa. Título não conta — ele é desenhado por cima (drawtext),
+          // não é uma camada que se dissolve.
+          const prevClip = ci > 0 ? track.clips[ci - 1] : undefined;
+          const prev = prevClip && prevClip.path !== undefined ? overlapMs(prevClip, c) : 0;
+          const op = c.opacity ?? 1;
+          if (prev > 0 || op < 1) {
+            vf.push("format=yuva420p");
+            if (prev > 0) vf.push(`fade=t=in:st=0:d=${secs(prev)}:alpha=1`);
+            if (op < 1) vf.push(`colorchannelmixer=aa=${op}`);
+          }
+          // Desloca pro lugar na timeline.
+          vf.push(`setpts=PTS+${s}/TB`);
+
+          parts.push(`[${idx}:v]${vf.join(",")}[v${k}]`);
+          parts.push(
+            `${acc}[v${k}]overlay=x=0:y=0:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
+          );
+          acc = `[vacc${k}]`;
+          k++;
+        } else if (c.title) {
+          // Título: drawtext direto no acumulado, ligado na janela do título.
+          const font = opts.fontPath ? `fontfile=${fontfileArg(opts.fontPath)}:` : "";
+          const color = c.opacity !== undefined && c.opacity < 1
+            ? `${c.title.color}@${c.opacity}`
+            : c.title.color;
+          const dt =
+            `${font}text='${drawtextEscape(c.title.text)}':` +
+            `fontsize=${c.title.fontSizePx}:fontcolor=${color}:` +
+            `borderw=2:bordercolor=black@0.6:` +
+            `x=(w-text_w)/2:y=${titleY(c.title.anchor)}:` +
+            `enable='between(t,${s},${e})'`;
+          parts.push(`${acc}drawtext=${dt}[vacc${k}]`);
+          acc = `[vacc${k}]`;
+          k++;
+        }
+      });
+    }
+    vLabel = acc;
+  }
+
+  /* ---------------- ÁUDIO ---------------- */
+
+  // Cada clipe de mídia COM som (e não silenciado) vira um fluxo atrasado.
+  const aLabels: string[] = [];
+  let ai = 0;
+  for (const track of tl.tracks) {
+    track.clips.forEach((c, ci) => {
+      if (c.path === undefined) return;
+      const info = sources[c.path];
+      if (!info?.hasAudio || c.muted) return;
+      const idx = inputIndex.get(c.id)!;
+      const si = secs(c.srcIn ?? 0);
+      const so = secs((c.srcIn ?? 0) + c.durationMs);
+      const af = [
+        `atrim=start=${si}:end=${so}`,
+        "asetpts=PTS-STARTPTS",
+        "aresample=48000",
+        "aformat=sample_fmts=fltp:channel_layouts=stereo",
+      ];
+      if (c.volume !== undefined && c.volume !== 1) af.push(`volume=${c.volume}`);
+      // Fade: o maior entre o que o usuário pediu e a sobreposição (crossfade) —
+      // e só com VIZINHO DE MÍDIA (título não tem áudio, não faz crossfade).
+      const prevA = ci > 0 ? track.clips[ci - 1] : undefined;
+      const nextA = ci < track.clips.length - 1 ? track.clips[ci + 1] : undefined;
+      const inOv = prevA && prevA.path !== undefined ? overlapMs(prevA, c) : 0;
+      const outOv = nextA && nextA.path !== undefined ? overlapMs(c, nextA) : 0;
+      const fi = Math.max(c.fadeInMs ?? 0, inOv);
+      const fo = Math.max(c.fadeOutMs ?? 0, outOv);
+      if (fi > 0) af.push(`afade=t=in:st=0:d=${secs(fi)}`);
+      if (fo > 0) af.push(`afade=t=out:st=${secs(c.durationMs - fo)}:d=${secs(fo)}`);
+      // Atraso pro lugar na timeline (ms inteiros; `all=1` atrasa os dois canais).
+      af.push(`adelay=${Math.round(c.startMs)}|${Math.round(c.startMs)}`);
+      parts.push(`[${idx}:a]${af.join(",")}[a${ai}]`);
+      aLabels.push(`[a${ai}]`);
+      ai++;
+    });
+  }
+
+  let aLabel: string | null = null;
+  if (aLabels.length === 1) {
+    // Um fluxo só: não precisa de amix (que baixaria/normalizaria à toa).
+    parts.push(`${aLabels[0]}anull[outa]`);
+    aLabel = "[outa]";
+  } else if (aLabels.length > 1) {
+    // `normalize=0`: soma sem dividir pela contagem. Com os fades do crossfade a
+    // soma fica estável; dividir faria o volume cair quando entrasse a 2ª trilha.
+    parts.push(`${aLabels.join("")}amix=inputs=${aLabels.length}:normalize=0[outa]`);
+    aLabel = "[outa]";
+  }
+
+  /* ---------------- montagem final ---------------- */
+
+  args.push("-filter_complex", parts.join(";"));
+  if (vLabel) args.push("-map", vLabel);
+  if (aLabel) args.push("-map", aLabel);
+
+  if (vLabel) {
+    args.push("-c:v", "libx264", "-preset", preset, "-crf", String(crf), "-pix_fmt", "yuv420p");
+  }
+  if (aLabel) args.push("-c:a", "aac", "-b:a", "192k");
+  args.push("-movflags", "+faststart", out);
+  return args;
+}
+
+/**
+ * A timeline é DEGENERADA (cabe no `-c copy` instantâneo da v0.1)? Se sim,
+ * devolve os clipes em fila pro `planExport`; se não, `null` (vai de
+ * `filter_complex`). É o que preserva o "instantâneo" da v0.1 e por isso é
+ * testado com cuidado.
+ *
+ * Degenerada = **uma trilha de vídeo com conteúdo, o resto vazio**, clipes de
+ * MÍDIA em FILA (sem buraco, sem sobreposição/transição), **sem** título,
+ * volume≠1, mudo, fade ou opacidade. Qualquer coisa da v0.2 → `filter_complex`.
+ */
+export function degenerateClips(tl: Timeline): ExportClip[] | null {
+  const videoTracks = tl.tracks.filter((t) => t.kind === "video");
+  const withClips = tl.tracks.filter((t) => t.clips.length > 0);
+  // Só UMA trilha pode ter clipes, e ela tem que ser de vídeo.
+  if (withClips.length !== 1 || withClips[0].kind !== "video") return null;
+  const track = withClips[0];
+  if (videoTracks[0]?.id !== track.id) return null; // tem que ser a trilha base
+
+  const clips = [...track.clips].sort((a, b) => a.startMs - b.startMs);
+  let cursor = 0;
+  const out: ExportClip[] = [];
+  for (const c of clips) {
+    if (c.path === undefined || c.srcIn === undefined) return null; // título
+    if (c.title) return null;
+    if (c.muted) return null;
+    if (c.volume !== undefined && c.volume !== 1) return null;
+    if (c.fadeInMs || c.fadeOutMs) return null;
+    if (c.opacity !== undefined && c.opacity < 1) return null;
+    // Em fila, encostadinho: sem buraco e sem sobreposição (transição).
+    if (c.startMs !== cursor) return null;
+    cursor += c.durationMs;
+    out.push({ path: c.path, srcIn: c.srcIn, srcOut: c.srcIn + c.durationMs });
+  }
+  return out;
 }
 
 /** Argumentos da sonda de quadros-chave (o ffprobe, não o ffmpeg).

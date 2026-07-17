@@ -51,7 +51,15 @@
  *   é exatamente o que alguém vai escrever pra testar isto.
  */
 
-import { clipStarts, split, type Track } from "./timeline";
+import {
+  baseVideoTrack,
+  clipEnd,
+  isMedia,
+  splitAt,
+  srcOut,
+  type Timeline,
+  type Track,
+} from "./timeline";
 
 export interface Marker {
   /** Instante DENTRO do arquivo gravado, em milissegundos. */
@@ -133,18 +141,18 @@ export function parseMarkers(json: string): MarkerFile {
  * próximo, não a este. É a mesma fronteira meio-aberta do `timeToClip`.
  */
 export function sourceToTimeline(track: Track, source: string, srcMs: number): number[] {
-  const starts = clipStarts(track);
   const out: number[] = [];
-  track.clips.forEach((c, i) => {
-    if (c.path !== source) return;
-    if (srcMs < c.srcIn || srcMs >= c.srcOut) return;
-    out.push(starts[i] + (srcMs - c.srcIn));
-  });
+  for (const c of track.clips) {
+    if (!isMedia(c) || c.path !== source) continue;
+    const inn = c.srcIn ?? 0;
+    if (srcMs < inn || srcMs >= srcOut(c)) continue;
+    out.push(c.startMs + (srcMs - inn));
+  }
   return out;
 }
 
 export interface ApplyResult {
-  track: Track;
+  timeline: Timeline;
   /** Quantos marcadores viraram corte de verdade. */
   applied: number;
   /** Quantos caíram fora do que sobrou na timeline (trecho aparado, ou emenda). */
@@ -163,23 +171,32 @@ export interface ApplyResult {
  * num trecho que foi aparado fora, é um não-evento. O `split()` devolve a mesma
  * trilha nesses casos e a gente só conta.
  */
-export function applyMarkers(track: Track, source: string, markers: Marker[]): ApplyResult {
-  let out = track;
+export function applyMarkers(tl: Timeline, source: string, markers: Marker[]): ApplyResult {
+  let out = tl;
   let applied = 0;
   let skipped = 0;
 
   for (const m of markers) {
-    // Recalculado a CADA marcador contra a trilha já cortada: cortar não muda
-    // durações nem ordem, mas muda em qual clipe o instante cai — e é o clipe
-    // que o `split` precisa achar.
-    const times = sourceToTimeline(out, source, m.tMs);
+    // Recalculado a CADA marcador contra a trilha JÁ cortada: cortar não muda
+    // durações nem posições, mas muda em qual clipe o instante cai — e é o clipe
+    // que o `splitAt` precisa achar (por id).
+    const base = baseVideoTrack(out);
+    if (!base) {
+      skipped++;
+      continue;
+    }
+    const times = sourceToTimeline(base, source, m.tMs);
     if (times.length === 0) {
       skipped++;
       continue;
     }
     let did = false;
     for (const t of times) {
-      const next = split(out, t);
+      // Acha o clipe da trilha base sob este instante e corta-o ali.
+      const track = baseVideoTrack(out);
+      const hit = track?.clips.find((c) => isMedia(c) && t > c.startMs && t < clipEnd(c));
+      if (!hit) continue;
+      const next = splitAt(out, hit.id, t);
       if (next !== out) {
         out = next;
         did = true;
@@ -189,5 +206,5 @@ export function applyMarkers(track: Track, source: string, markers: Marker[]): A
     else skipped++;
   }
 
-  return { track: out, applied, skipped };
+  return { timeline: out, applied, skipped };
 }

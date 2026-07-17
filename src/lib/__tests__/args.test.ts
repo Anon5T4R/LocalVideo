@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   concatArgs,
   concatListBody,
+  degenerateClips,
+  drawtextEscape,
   encodeArgs,
+  filterComplexArgs,
   keyframeProbeArgs,
   nearestKeyframe,
   parseKeyframesCsv,
@@ -12,6 +15,7 @@ import {
   type ExportClip,
   type SourceInfo,
 } from "../args";
+import type { Clip, Timeline, Track } from "../timeline";
 
 /** Um fonte de mentira, com quadro-chave a cada 1 s (o `-g 30` a 30 fps). */
 function src(over: Partial<SourceInfo> = {}): SourceInfo {
@@ -400,5 +404,164 @@ describe("encodeArgs — o grafo do filter_complex", () => {
     // Sem yuv420p, o x264 pode sair em 4:4:4 e o vídeo não abre em player nenhum.
     expect(a[a.indexOf("-pix_fmt") + 1]).toBe("yuv420p");
     expect(a[a.indexOf("-movflags") + 1]).toBe("+faststart");
+  });
+});
+
+/* ================================================================== */
+/* v0.2 — o compilador de filter_complex                               */
+/* ================================================================== */
+
+const mediaClip = (id: string, startMs: number, durationMs: number, srcIn = 0, path = A): Clip => ({
+  id,
+  startMs,
+  durationMs,
+  path,
+  srcIn,
+});
+const vtrack = (clips: Clip[], id = "v1"): Track => ({ id, kind: "video", clips });
+const atrack = (clips: Clip[], id = "a1"): Track => ({ id, kind: "audio", clips });
+const tl = (tracks: Track[]): Timeline => ({ version: 2, tracks });
+
+/** O `-filter_complex` inteiro como string (é onde mora o risco). */
+function fc(args: string[]): string {
+  return args[args.indexOf("-filter_complex") + 1];
+}
+
+describe("drawtextEscape — o bug clássico do drawtext (provado com ffmpeg real)", () => {
+  it("cada especial ganha as barras que o render EXIGIU", () => {
+    // Provados um a um com ffmpeg de verdade (ver export.real.test.ts):
+    expect(drawtextEscape("%")).toBe(String.raw`\\%`); // porcento chega como \%
+    expect(drawtextEscape(":")).toBe(String.raw`\:`); // sobrevive ao parser de opções
+    expect(drawtextEscape("'")).toBe(String.raw`'\\\''`); // fecha aspa, escapa, reabre
+    expect(drawtextEscape("\\")).toBe(String.raw`\\`); // barra literal chega como \
+    expect(drawtextEscape("50%")).toBe(String.raw`50\\%`);
+  });
+});
+
+describe("degenerateClips — preserva o -c copy instantâneo da v0.1", () => {
+  it("1 trilha, em fila, sem nada da v0.2 → clipes pro planExport", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000), mediaClip("b", 2000, 3000, 5000)]), atrack([])]);
+    expect(degenerateClips(t)).toEqual([
+      { path: A, srcIn: 0, srcOut: 2000 },
+      { path: A, srcIn: 5000, srcOut: 8000 },
+    ]);
+  });
+
+  it("buraco entre clipes → NÃO é degenerada (precisa de preto)", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000), mediaClip("b", 3000, 1000)])]);
+    expect(degenerateClips(t)).toBeNull();
+  });
+
+  it("sobreposição (transição) → NÃO é degenerada", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000), mediaClip("b", 1500, 2000)])]);
+    expect(degenerateClips(t)).toBeNull();
+  });
+
+  it("2ª trilha com conteúdo, título, volume, fade, mudo → NÃO é degenerada", () => {
+    expect(degenerateClips(tl([vtrack([mediaClip("a", 0, 1000)]), vtrack([mediaClip("b", 0, 1000)], "v2")]))).toBeNull();
+    const withTitle: Clip = { id: "t", startMs: 0, durationMs: 1000, title: { text: "x", fontSizePx: 40, color: "#fff", anchor: "top" } };
+    expect(degenerateClips(tl([vtrack([withTitle])]))).toBeNull();
+    expect(degenerateClips(tl([vtrack([{ ...mediaClip("a", 0, 1000), volume: 0.5 }])]))).toBeNull();
+    expect(degenerateClips(tl([vtrack([{ ...mediaClip("a", 0, 1000), fadeInMs: 200 }])]))).toBeNull();
+    expect(degenerateClips(tl([vtrack([{ ...mediaClip("a", 0, 1000), muted: true }])]))).toBeNull();
+  });
+});
+
+describe("filterComplexArgs — o compilador", () => {
+  it("2 trilhas de vídeo → fundo preto + dois overlays + map [outv]", () => {
+    const t = tl([
+      vtrack([mediaClip("a", 0, 4000, 0, A)]),
+      vtrack([mediaClip("b", 0, 2000, 0, B)], "v2"),
+    ]);
+    const a = filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4");
+    const g = fc(a);
+    // Fundo do tamanho do filme (4 s = a trilha mais longa).
+    expect(g).toContain("color=c=black:s=640x480:r=30:d=4.000[vbase]");
+    // Dois clipes entram por overlay ligados na janela de cada um.
+    expect(g).toContain("overlay=x=0:y=0:eof_action=pass:enable='between(t,0.000,4.000)'");
+    expect(g).toContain("overlay=x=0:y=0:eof_action=pass:enable='between(t,0.000,2.000)'");
+    expect(a).toContain("-map");
+    // Uma entrada -i por clipe de mídia.
+    expect(a.slice(0, 4)).toEqual(["-i", A, "-i", B]);
+  });
+
+  it("crossfade (sobreposição) → o clipe de cima entra com fade no alfa", () => {
+    // a=[0,3000), b começa em 2000 → 1000 ms de sobreposição.
+    const t = tl([vtrack([mediaClip("a", 0, 3000, 0, A), mediaClip("b", 2000, 3000, 0, B)])]);
+    const g = fc(filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4"));
+    expect(g).toContain("format=yuva420p");
+    expect(g).toContain("fade=t=in:st=0:d=1.000:alpha=1");
+  });
+
+  it("posiciona o clipe no tempo (setpts + adelay no áudio)", () => {
+    const t = tl([vtrack([mediaClip("a", 2000, 1000, 500, A)])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    // Vídeo deslocado pro startMs.
+    expect(g).toContain("setpts=PTS+2.000/TB");
+    // Recorte no tempo do ARQUIVO (srcIn 500 → srcOut 1500).
+    expect(g).toContain("trim=start=0.500:end=1.500");
+    // Áudio atrasado pro startMs.
+    expect(g).toContain("adelay=2000|2000");
+  });
+
+  it("título → drawtext com texto escapado, fontfile e enable na janela", () => {
+    const title: Clip = {
+      id: "t",
+      startMs: 1000,
+      durationMs: 2000,
+      title: { text: "Olá: 50%", fontSizePx: 60, color: "#ffcc00", anchor: "bottom" },
+    };
+    const t = tl([vtrack([mediaClip("a", 0, 5000, 0, A), title])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4", { fontPath: "C:\\f\\font.ttf" }));
+    expect(g).toContain("drawtext=");
+    // Windows: o `:` do `C:` escapado como `\:` dentro das aspas.
+    expect(g).toContain("fontfile='C\\:/f/font.ttf'");
+    // O `%` chega ao drawtext como `\%` (⇒ `\\%`); o `:` como `\:`.
+    expect(g).toContain(String.raw`text='Olá\: 50\\%'`);
+    expect(g).toContain("fontsize=60");
+    expect(g).toContain("enable='between(t,1.000,3.000)'");
+  });
+
+  it("2 fluxos de áudio → amix inputs=2, sem silêncio", () => {
+    const t = tl([
+      vtrack([mediaClip("a", 0, 3000, 0, A)]),
+      atrack([mediaClip("z", 0, 3000, 0, B)]),
+    ]);
+    const g = fc(filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4"));
+    expect(g).toContain("amix=inputs=2:normalize=0[outa]");
+    const a = filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4");
+    expect(a).toContain("[outa]");
+  });
+
+  it("um fluxo de áudio só → anull, sem amix à toa", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000, 0, A)])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("anull[outa]");
+    expect(g).not.toContain("amix");
+  });
+
+  it("volume e fade viram volume=/afade=", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 4000, 0, A), volume: 0.5, fadeInMs: 500, fadeOutMs: 1000 }])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("volume=0.5");
+    expect(g).toContain("afade=t=in:st=0:d=0.500");
+    expect(g).toContain("afade=t=out:st=3.000:d=1.000");
+  });
+
+  it("clipe mudo não entra no áudio (nem vira fluxo)", () => {
+    const t = tl([vtrack([{ ...mediaClip("a", 0, 2000, 0, A), muted: true }])]);
+    const a = filterComplexArgs(t, { [A]: src() }, "o.mp4");
+    // Sem trilha de áudio na saída.
+    expect(a).not.toContain("-c:a");
+    expect(fc(a)).not.toContain("[outa]");
+  });
+
+  it("saída pronta: libx264 + yuv420p + faststart", () => {
+    const t = tl([vtrack([mediaClip("a", 0, 2000, 0, A)])]);
+    const a = filterComplexArgs(t, { [A]: src() }, "o.mp4");
+    expect(a).toContain("libx264");
+    expect(a[a.indexOf("-pix_fmt") + 1]).toBe("yuv420p");
+    expect(a[a.indexOf("-movflags") + 1]).toBe("+faststart");
+    expect(a[a.length - 1]).toBe("o.mp4");
   });
 });

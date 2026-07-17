@@ -61,6 +61,52 @@ pub fn resolve_bin(app: &tauri::AppHandle, bin: &str) -> Result<PathBuf, String>
     Err(format!("{} não encontrado (runtime de mídia ausente)", bin))
 }
 
+/// Nome da fonte embarcada (DejaVu Sans, licença permissiva). O `drawtext` do
+/// ffmpeg NÃO acha fonte sozinho no Windows — precisa de um `fontfile=` com
+/// caminho absoluto. Por isso a gente embarca uma e resolve o caminho aqui.
+pub const FONT_FILE: &str = "LocalVideoSans.ttf";
+
+/// Resolve o caminho ABSOLUTO de uma fonte pro `drawtext`. Prefere a embarcada
+/// (dev: cwd/fonts; prod: resource dir); se por algum motivo ela sumir, cai numa
+/// fonte de sistema conhecida (Windows sempre tem arial/segoe). Assim título
+/// nunca fica sem fonte — nem no pacote, nem rodando do código.
+pub fn resolve_font(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let rel = format!("fonts/{}", FONT_FILE);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(&rel));
+    }
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push(res.join(&rel));
+        candidates.push(res.join(FONT_FILE));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(&rel));
+        }
+    }
+    // Fallback de sistema (só se a embarcada sumir).
+    #[cfg(windows)]
+    {
+        candidates.push(PathBuf::from("C:/Windows/Fonts/arial.ttf"));
+        candidates.push(PathBuf::from("C:/Windows/Fonts/segoeui.ttf"));
+    }
+    #[cfg(not(windows))]
+    {
+        candidates.push(PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));
+        candidates.push(PathBuf::from("/usr/share/fonts/TTF/DejaVuSans.ttf"));
+        candidates.push(PathBuf::from("/Library/Fonts/Arial.ttf"));
+    }
+    candidates.into_iter().find(|c| c.exists())
+}
+
+/// O caminho da fonte pro front montar o `drawtext` (os args moram no front,
+/// testados). `None` só se nem a embarcada nem uma de sistema existirem.
+#[tauri::command(async)]
+pub fn font_path(app: tauri::AppHandle) -> Option<String> {
+    resolve_font(&app).map(|p| p.to_string_lossy().to_string())
+}
+
 pub fn no_window(cmd: &mut Command) {
     // Não abre janela de console no Windows (CREATE_NO_WINDOW). Sem isso, um
     // console preto pisca a cada chamada — e a régua de miniaturas chama muito.

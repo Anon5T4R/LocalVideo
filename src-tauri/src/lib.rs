@@ -58,6 +58,7 @@ pub fn run() {
             ffmpeg::ffmpeg_ok,
             ffmpeg::ff_cancel,
             ffmpeg::ff_run,
+            ffmpeg::font_path,
             ffmpeg::unique_path,
             ffmpeg::write_tmp_text,
             ffmpeg::cleanup_tmp,

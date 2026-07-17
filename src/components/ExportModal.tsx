@@ -132,7 +132,9 @@ function PlanCard() {
 function Done() {
   const ex = useExport();
   if (!ex.result) return null;
-  const copy = ex.result.plan.kind === "copy";
+  const { compiled, plan } = ex.result;
+  const copy = plan?.kind === "copy";
+  const doneWhy = compiled ? t("exp.doneCompile") : copy ? t("exp.doneCopy") : t("exp.doneEncode");
   return (
     <div className="done">
       <div className="done-icon" aria-hidden>
@@ -143,8 +145,7 @@ function Done() {
         {baseName(ex.result.path)}
       </p>
       <p className="muted small">
-        {copy ? t("exp.doneCopy") : t("exp.doneEncode")}{" "}
-        {t("exp.doneTime", { time: formatDuration(ex.result.elapsedMs) })}
+        {doneWhy} {t("exp.doneTime", { time: formatDuration(ex.result.elapsedMs) })}
       </p>
       <div className="modal-actions">
         <button className="primary" onClick={() => ex.close()}>
@@ -178,5 +179,7 @@ function reasonText(r: PlanReason): string {
       return t("exp.whyMixed");
     case "encode-no-keyframe-data":
       return t("exp.whyNoKeyframes", { name: baseName(r.path) });
+    case "encode-multitrack":
+      return t("exp.whyMultitrack");
   }
 }

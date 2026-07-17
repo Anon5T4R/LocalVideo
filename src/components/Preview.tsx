@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
 import { formatDuration, formatTimecode } from "../lib/probe";
-import { endHit, timeToClip, totalDuration } from "../lib/timeline";
+import { baseVideoTrack, endHit, isMedia, srcOut, timelineDuration, timeToClip } from "../lib/timeline";
 import { useEditor } from "../state/editor";
 
 /**
@@ -25,7 +25,7 @@ import { useEditor } from "../state/editor";
  * que não se tem é pior do que não ter.
  */
 export default function Preview() {
-  const track = useEditor((s) => s.history.present);
+  const timeline = useEditor((s) => s.history.present);
   const media = useEditor((s) => s.media);
   const missing = useEditor((s) => s.missing);
   const playhead = useEditor((s) => s.playhead);
@@ -41,33 +41,44 @@ export default function Preview() {
   /** O canvas tem um quadro pintado e válido pro playhead de agora? */
   const [painted, setPainted] = useState(false);
 
-  const total = useMemo(() => totalDuration(track), [track]);
+  // A prévia mostra a TRILHA BASE (a primeira de vídeo). A composição completa
+  // (overlays, títulos, crossfades) aparece na EXPORTAÇÃO — o rodapé avisa isso
+  // quando há mais de uma trilha. Compor tudo ao vivo por WebCodecs fica pra v0.3.
+  const track = useMemo(() => baseVideoTrack(timeline), [timeline]);
+  const total = useMemo(() => timelineDuration(timeline), [timeline]);
+  const multitrack = useMemo(
+    () => timeline.tracks.filter((t) => t.clips.length > 0).length > 1
+      || timeline.tracks.some((t) => t.clips.some((c) => !isMedia(c))),
+    [timeline],
+  );
   // No fim exato (`playhead === total`) o `timeToClip` devolve null — e é o
-  // certo: o filme acabou, não há clipe tocando. Só que é EXATAMENTE onde o play
-  // para, e prévia vazia dizendo "importe um vídeo" com a timeline cheia é
-  // mentira na cara de quem acabou de assistir. Pra exibir, o fim gruda no
-  // último quadro (ver `endHit`).
+  // certo: o filme acabou. Mas é onde o play para; pra não mostrar "importe um
+  // vídeo" com a timeline cheia, o fim gruda no último quadro (ver `endHit`).
   const hit = useMemo(
     () => timeToClip(track, playhead) ?? (playhead >= total ? endHit(track) : null),
     [track, playhead, total],
   );
-  const gone = hit ? missing.includes(hit.clip.path) : false;
-  const fps = hit ? (media[hit.clip.path]?.fps ?? 30) : 30;
-  const exact = hit && !gone ? canDecodeExactly(hit.clip.path) : false;
+  // `hit` só vem de clipe de MÍDIA (o `timeToClip` filtra), então `path` existe.
+  const hitPath = hit?.clip.path ?? "";
+  const gone = hit ? missing.includes(hitPath) : false;
+  const fps = hit ? (media[hitPath]?.fps ?? 30) : 30;
+  const exact = hit && !gone ? canDecodeExactly(hitPath) : false;
 
-  const src = hit && !gone ? convertFileSrc(hit.clip.path) : "";
+  const src = hit && !gone ? convertFileSrc(hitPath) : "";
 
   // Fecha os decodificadores dos arquivos que saíram da timeline. `VideoFrame` e
   // `VideoDecoder` seguram memória de VÍDEO, fora do alcance do coletor de lixo.
   useEffect(() => {
-    const alive = new Set(track.clips.map((c) => c.path));
+    const alive = new Set(
+      timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!)),
+    );
     for (const [path, fs] of sources.current) {
       if (!alive.has(path)) {
         fs.dispose();
         sources.current.delete(path);
       }
     }
-  }, [track]);
+  }, [timeline]);
 
   useEffect(() => {
     const map = sources.current;
@@ -88,7 +99,7 @@ export default function Preview() {
     }
 
     let dead = false;
-    const path = hit.clip.path;
+    const path = hit.clip.path!;
     const targetUs = Math.round(hit.srcTime * 1000);
 
     void (async () => {
@@ -179,10 +190,12 @@ export default function Preview() {
     const v = videoRef.current;
     if (!v || !hit || !playing || rate < 0) return;
     const srcMs = v.currentTime * 1000;
+    const clipIn = hit.clip.srcIn ?? 0;
+    const clipOut = srcOut(hit.clip);
     // Passou do fim APARADO do clipe? Pula pra emenda seguinte — é o corte
     // acontecendo na prévia, sem tocar em byte nenhum do arquivo.
-    if (srcMs >= hit.clip.srcOut - 1) {
-      const next = hit.clipStart + (hit.clip.srcOut - hit.clip.srcIn);
+    if (srcMs >= clipOut - 1) {
+      const next = hit.clipStart + (clipOut - clipIn);
       if (next >= total) {
         setPlaying(false);
         seek(total);
@@ -191,17 +204,19 @@ export default function Preview() {
       }
       return;
     }
-    seek(hit.clipStart + (srcMs - hit.clip.srcIn));
+    seek(hit.clipStart + (srcMs - clipIn));
   };
 
   /** O rodapé conta o que a prévia É — e por que, quando é aproximada. */
   const quality = !hit
     ? ""
-    : exact
-      ? t("preview.exact")
-      : !hasWebCodecs()
-        ? t("preview.roughNoCodecs")
-        : t("preview.roughContainer");
+    : multitrack
+      ? t("preview.multitrack")
+      : exact
+        ? t("preview.exact")
+        : !hasWebCodecs()
+          ? t("preview.roughNoCodecs")
+          : t("preview.roughContainer");
 
   return (
     <div className="card preview-card">

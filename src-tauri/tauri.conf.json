@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LocalVideo",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "com.localvideo.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -37,7 +37,7 @@
         "installerIcon": "icons/icon.ico"
       }
     },
-    "resources": ["binaries/ffmpeg/*"],
+    "resources": ["binaries/ffmpeg/*", "fonts/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

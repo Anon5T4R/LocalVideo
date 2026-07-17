@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { applyMarkers, MarkerParseError, parseMarkers, sourceToTimeline } from "../markers";
-import { __resetIds, type Track } from "../timeline";
+import { __resetIds, srcOut, type Clip, type Timeline, type Track } from "../timeline";
 
 const A = "C:\\rec\\aula.mp4";
 const B = "C:\\rec\\outra.mp4";
+
+const clip = (id: string, startMs: number, durationMs: number, srcIn: number, path: string): Clip => ({
+  id,
+  startMs,
+  durationMs,
+  path,
+  srcIn,
+});
+const vtrack = (clips: Clip[]): Track => ({ id: "v1", kind: "video", clips });
+const tl = (clips: Clip[]): Timeline => ({ version: 2, tracks: [vtrack(clips)] });
 
 beforeEach(() => __resetIds());
 
@@ -64,108 +74,84 @@ describe("parseMarkers", () => {
 
 describe("sourceToTimeline — tempo do ARQUIVO ≠ tempo do filme", () => {
   it("clipe inteiro e sozinho: os dois tempos coincidem", () => {
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 0, srcOut: 10000 }] };
+    const track = vtrack([clip("c1", 0, 10000, 0, A)]);
     expect(sourceToTimeline(track, A, 3000)).toEqual([3000]);
   });
 
   it("clipe aparado: o instante anda pra trás na timeline", () => {
-    // O clipe começa aos 5 s do arquivo. O segundo 7 do arquivo é o segundo 2 do
-    // filme. Quem confunde os dois corta 5 s fora do lugar.
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 5000, srcOut: 9000 }] };
+    // Começa aos 5 s do arquivo. O segundo 7 do arquivo é o segundo 2 do filme.
+    const track = vtrack([clip("c1", 0, 4000, 5000, A)]);
     expect(sourceToTimeline(track, A, 7000)).toEqual([2000]);
   });
 
   it("instante aparado fora não aparece em lugar nenhum", () => {
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 5000, srcOut: 9000 }] };
+    const track = vtrack([clip("c1", 0, 4000, 5000, A)]); // srcIn 5000, srcOut 9000
     expect(sourceToTimeline(track, A, 1000)).toEqual([]);
     expect(sourceToTimeline(track, A, 9000)).toEqual([]); // srcOut é exclusivo
   });
 
   it("o mesmo segundo do arquivo em DOIS lugares do filme → dois instantes", () => {
-    // O usuário duplicou o trecho. Um marcador ali é dois cortes.
-    const track: Track = {
-      clips: [
-        { id: "c1", path: A, srcIn: 0, srcOut: 4000 },
-        { id: "c2", path: A, srcIn: 0, srcOut: 4000 },
-      ],
-    };
+    const track = vtrack([clip("c1", 0, 4000, 0, A), clip("c2", 4000, 4000, 0, A)]);
     expect(sourceToTimeline(track, A, 1000)).toEqual([1000, 5000]);
   });
 
   it("ignora clipe de outro arquivo", () => {
-    const track: Track = {
-      clips: [
-        { id: "c1", path: B, srcIn: 0, srcOut: 3000 },
-        { id: "c2", path: A, srcIn: 0, srcOut: 3000 },
-      ],
-    };
-    // O segundo 1 de A está no segundo 4 do filme (B ocupa os 3 primeiros).
+    const track = vtrack([clip("c1", 0, 3000, 0, B), clip("c2", 3000, 3000, 0, A)]);
     expect(sourceToTimeline(track, A, 1000)).toEqual([4000]);
   });
 });
 
 describe("applyMarkers — a ponte com o LocalRecord", () => {
   it("corta a timeline em cada marcador", () => {
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 0, srcOut: 10000 }] };
-    const r = applyMarkers(track, A, [{ tMs: 3000 }, { tMs: 7000 }]);
+    const t = tl([clip("c1", 0, 10000, 0, A)]);
+    const r = applyMarkers(t, A, [{ tMs: 3000 }, { tMs: 7000 }]);
     expect(r.applied).toBe(2);
     expect(r.skipped).toBe(0);
-    // Um clipe virou três janelas sobre o MESMO arquivo — sem tocar em byte.
-    expect(r.track.clips.map((c) => [c.srcIn, c.srcOut])).toEqual([
+    const clips = r.timeline.tracks[0].clips;
+    expect(clips.map((c) => [c.srcIn, srcOut(c)])).toEqual([
       [0, 3000],
       [3000, 7000],
       [7000, 10000],
     ]);
-    expect(r.track.clips.every((c) => c.path === A)).toBe(true);
+    expect(clips.every((c) => c.path === A)).toBe(true);
   });
 
   it("marcador em cima de emenda que já existe é não-evento, não erro", () => {
-    const track: Track = {
-      clips: [
-        { id: "c1", path: A, srcIn: 0, srcOut: 5000 },
-        { id: "c2", path: A, srcIn: 5000, srcOut: 9000 },
-      ],
-    };
-    const r = applyMarkers(track, A, [{ tMs: 5000 }]);
+    const t = tl([clip("c1", 0, 5000, 0, A), clip("c2", 5000, 4000, 5000, A)]);
+    const r = applyMarkers(t, A, [{ tMs: 5000 }]);
     expect(r.applied).toBe(0);
     expect(r.skipped).toBe(1);
-    expect(r.track.clips.length).toBe(2);
+    expect(r.timeline.tracks[0].clips.length).toBe(2);
   });
 
   it("marcador fora do que sobrou na timeline é contado, não escondido", () => {
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 4000, srcOut: 8000 }] };
-    const r = applyMarkers(track, A, [{ tMs: 1000 }, { tMs: 6000 }]);
+    const t = tl([clip("c1", 0, 4000, 4000, A)]); // srcIn 4000, srcOut 8000
+    const r = applyMarkers(t, A, [{ tMs: 1000 }, { tMs: 6000 }]);
     expect(r.applied).toBe(1);
     expect(r.skipped).toBe(1);
   });
 
   it("marcadores aplicados em sequência, cada um no clipe certo", () => {
-    // O terceiro corte tem que achar o clipe que os dois anteriores criaram.
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 0, srcOut: 10000 }] };
-    const r = applyMarkers(track, A, [{ tMs: 2000 }, { tMs: 4000 }, { tMs: 6000 }, { tMs: 8000 }]);
+    const t = tl([clip("c1", 0, 10000, 0, A)]);
+    const r = applyMarkers(t, A, [{ tMs: 2000 }, { tMs: 4000 }, { tMs: 6000 }, { tMs: 8000 }]);
     expect(r.applied).toBe(4);
-    expect(r.track.clips.length).toBe(5);
-    expect(r.track.clips.map((c) => c.srcIn)).toEqual([0, 2000, 4000, 6000, 8000]);
+    const clips = r.timeline.tracks[0].clips;
+    expect(clips.length).toBe(5);
+    expect(clips.map((c) => c.srcIn)).toEqual([0, 2000, 4000, 6000, 8000]);
   });
 
   it("não mexe em clipe de outro arquivo", () => {
-    const track: Track = {
-      clips: [
-        { id: "c1", path: B, srcIn: 0, srcOut: 5000 },
-        { id: "c2", path: A, srcIn: 0, srcOut: 5000 },
-      ],
-    };
-    const r = applyMarkers(track, A, [{ tMs: 2000 }]);
+    const t = tl([clip("c1", 0, 5000, 0, B), clip("c2", 5000, 5000, 0, A)]);
+    const r = applyMarkers(t, A, [{ tMs: 2000 }]);
     expect(r.applied).toBe(1);
-    expect(r.track.clips.length).toBe(3);
-    // O clipe de B saiu inteiro.
-    expect(r.track.clips[0]).toEqual({ id: "c1", path: B, srcIn: 0, srcOut: 5000 });
+    expect(r.timeline.tracks[0].clips.length).toBe(3);
+    expect(r.timeline.tracks[0].clips[0].id).toBe("c1");
   });
 
-  it("não modifica a trilha original (o undo precisa do retrato de antes)", () => {
-    const track: Track = { clips: [{ id: "c1", path: A, srcIn: 0, srcOut: 10000 }] };
-    applyMarkers(track, A, [{ tMs: 3000 }]);
-    expect(track.clips.length).toBe(1);
-    expect(track.clips[0].srcOut).toBe(10000);
+  it("não modifica a timeline original (o undo precisa do retrato de antes)", () => {
+    const t = tl([clip("c1", 0, 10000, 0, A)]);
+    applyMarkers(t, A, [{ tMs: 3000 }]);
+    expect(t.tracks[0].clips.length).toBe(1);
+    expect(srcOut(t.tracks[0].clips[0])).toBe(10000);
   });
 });

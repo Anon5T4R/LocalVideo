@@ -2,111 +2,103 @@
  * O modelo da timeline — TS puro, sem React, sem Tauri. É o coração do app e
  * por isso mora aqui: dá pra testar cada operação sem abrir janela nenhuma.
  *
- * Modelo mental: **uma trilha de vídeo**, uma lista ORDENADA de clipes. Cada
- * clipe é uma janela (`srcIn`..`srcOut`) sobre um arquivo (`path`) — nunca uma
- * cópia do vídeo. Cortar não mexe em byte nenhum: só cria duas janelas onde
- * havia uma. É isso que faz o editor ser instantâneo e não destrutivo.
+ * ─── O salto da v0.1 pra v0.2 ────────────────────────────────────────────────
+ *
+ * A v0.1 era **uma trilha, lista ORDENADA de clipes** — a posição no tempo era
+ * implícita (a soma das durações anteriores). Isso casava com o export por
+ * `concat` (clipes em sequência), mas não dá conta de multitrilha nem de
+ * transição: dois clipes que se SOBREPÕEM no tempo não cabem numa lista sem
+ * posição.
+ *
+ * Na v0.2 cada clipe tem **posição explícita** (`startMs`) e **duração na
+ * timeline** (`durationMs`). Com isso vêm de graça: buracos (preto/silêncio),
+ * trilhas empilhadas (overlay de vídeo, mix de áudio) e — a sacada — a
+ * **transição é uma SOBREPOSIÇÃO**: quando dois clipes da mesma trilha se
+ * cruzam no tempo, aquele cruzamento É o crossfade. Uma fonte da verdade só
+ * (`startMs`+`durationMs`), sem um campo `transição` paralelo pra sair de
+ * sincronia — que é O bug clássico de NLE.
  *
  * Tempo é em MILISSEGUNDOS inteiros, sempre. Float em tempo de mídia acumula
  * erro e o corte "some" meio quadro depois de dez operações.
  *
- * Dois espaços de tempo, e confundi-los é O bug clássico de NLE:
- * - **tempo da timeline**: 0 = começo do filme montado.
- * - **tempo-fonte**: instante DENTRO do arquivo original.
- * `timeToClip()` é a ponte entre os dois.
+ * Dois espaços de tempo, e confundi-los é o outro bug clássico:
+ * - **tempo da timeline**: 0 = começo do filme montado (`startMs`).
+ * - **tempo-fonte**: instante DENTRO do arquivo original (`srcIn`).
  */
 
-export interface Clip {
-  id: string;
-  /** Caminho do arquivo no disco (o projeto guarda caminho, não vídeo). */
-  path: string;
-  /** Início da janela, em ms do arquivo-fonte. */
-  srcIn: number;
-  /** Fim da janela (exclusivo), em ms do arquivo-fonte. */
-  srcOut: number;
+export const TIMELINE_VERSION = 2;
+
+export type TrackKind = "video" | "audio";
+
+/** Onde o título se ancora na tela. Nove âncoras seria over-engineering pro que
+ *  a UI precisa; três resolvem 99% (legenda embaixo, título no meio, marca em
+ *  cima). O compilador traduz isto em expressão de posição do `drawtext`. */
+export type TitleAnchor = "top" | "center" | "bottom";
+
+export interface TitleProps {
+  text: string;
+  fontSizePx: number;
+  /** Cor no formato do ffmpeg: "#RRGGBB" ou nome ("white"). */
+  color: string;
+  anchor: TitleAnchor;
 }
 
+/**
+ * Um clipe. Pode ser MÍDIA (janela sobre um arquivo) ou TÍTULO (texto). O que
+ * distingue é a presença de `path` (mídia) ou `title` (texto) — nunca os dois.
+ *
+ * `durationMs` é a duração NA TIMELINE. Pra mídia, sem mudança de velocidade,
+ * ela é igual à janela-fonte (`srcOut = srcIn + durationMs`). Guardar a duração
+ * explícita (em vez de derivar de `srcOut`) unifica mídia e título: os dois
+ * ocupam `[startMs, startMs+durationMs)` e o resto do código não precisa saber
+ * qual é qual pra posicionar.
+ */
+export interface Clip {
+  id: string;
+  /** Início na timeline, em ms. */
+  startMs: number;
+  /** Duração na timeline, em ms. */
+  durationMs: number;
+
+  /* --- mídia (ausente em título) --- */
+  /** Caminho do arquivo no disco (o projeto guarda caminho, não vídeo). */
+  path?: string;
+  /** Início da janela, em ms do arquivo-fonte. `srcOut` = `srcIn + durationMs`. */
+  srcIn?: number;
+
+  /* --- título (ausente em mídia) --- */
+  title?: TitleProps;
+
+  /* --- áudio (só faz sentido em clipe de mídia com som) --- */
+  /** Silencia este clipe sem removê-lo. */
+  muted?: boolean;
+  /** Ganho linear. 1 = original, 0.5 = metade, 2 = dobro. `undefined` = 1. */
+  volume?: number;
+  fadeInMs?: number;
+  fadeOutMs?: number;
+
+  /* --- vídeo --- */
+  /** Opacidade 0..1 pra overlay/título. `undefined` = 1 (opaco). */
+  opacity?: number;
+}
+
+/** Uma trilha: clipes ORDENADOS por `startMs`. Vídeo empilha (overlay/z-order);
+ *  áudio mixa. */
 export interface Track {
+  id: string;
+  kind: TrackKind;
   clips: Clip[];
 }
 
-/** Quanto tempo este clipe ocupa na timeline. */
-export function clipDuration(c: Clip): number {
-  return Math.max(0, c.srcOut - c.srcIn);
+/** A timeline inteira. `version` mora aqui pra migração ao abrir um `.tvproj`. */
+export interface Timeline {
+  version: number;
+  tracks: Track[];
 }
 
-/** Duração do filme montado = soma dos clipes (uma trilha, sem buracos). */
-export function totalDuration(track: Track): number {
-  return track.clips.reduce((sum, c) => sum + clipDuration(c), 0);
-}
-
-/** Instante da timeline em que cada clipe COMEÇA (mesma ordem de `clips`). */
-export function clipStarts(track: Track): number[] {
-  const starts: number[] = [];
-  let acc = 0;
-  for (const c of track.clips) {
-    starts.push(acc);
-    acc += clipDuration(c);
-  }
-  return starts;
-}
-
-export interface Hit {
-  clip: Clip;
-  index: number;
-  /** Instante DENTRO do arquivo-fonte correspondente ao `t` pedido. */
-  srcTime: number;
-  /** Onde o clipe começa na timeline (pra UI não recalcular). */
-  clipStart: number;
-}
-
-/**
- * Dado um instante da timeline, qual clipe toca e em que ponto do arquivo.
- * A pergunta que o preview e o playhead fazem o tempo todo.
- *
- * Fronteira é meio-aberta (`[start, end)`): no instante exato da emenda quem
- * toca é o clipe da DIREITA — é o que o olho espera ao arrastar o playhead.
- * `t` no fim exato do filme não é clipe nenhum (`null`): é o fim, não o
- * primeiro quadro de um clipe inexistente.
- */
-export function timeToClip(track: Track, t: number): Hit | null {
-  if (t < 0) return null;
-  let acc = 0;
-  for (let i = 0; i < track.clips.length; i++) {
-    const c = track.clips[i];
-    const d = clipDuration(c);
-    if (d === 0) continue; // clipe de duração zero não pode "engolir" o playhead
-    if (t < acc + d) {
-      return { clip: c, index: i, srcTime: c.srcIn + (t - acc), clipStart: acc };
-    }
-    acc += d;
-  }
-  return null;
-}
-
-/**
- * O último quadro do filme — o `Hit` que o `timeToClip` de propósito NÃO dá.
- *
- * O contrato do `timeToClip` está certo: no fim exato não há clipe tocando. Mas
- * a PRÉVIA precisa mostrar alguma coisa ali, e "ali" é onde o play termina (o
- * próprio app dá `seek(total)` ao acabar). Sem isto, assistir até o fim apagava
- * a prévia e trocava o filme por "importe um vídeo" — com a timeline cheia.
- *
- * Fica aqui, e não no componente, porque é a mesma matemática de tempo do resto
- * do módulo — e porque assim tem teste.
- */
-export function endHit(track: Track): Hit | null {
-  let acc = 0;
-  let last: Hit | null = null;
-  for (let i = 0; i < track.clips.length; i++) {
-    const c = track.clips[i];
-    const d = clipDuration(c);
-    if (d === 0) continue; // clipe vazio não é "o último quadro" de nada
-    last = { clip: c, index: i, srcTime: c.srcOut, clipStart: acc };
-    acc += d;
-  }
-  return last;
-}
+/* ------------------------------------------------------------------ */
+/* Gerador de id                                                       */
+/* ------------------------------------------------------------------ */
 
 /** Gerador de id. Simples de propósito: só precisa ser único na sessão. */
 let seq = 0;
@@ -120,89 +112,404 @@ export function __resetIds() {
   seq = 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Leitura (puro)                                                      */
+/* ------------------------------------------------------------------ */
+
+export function isTitle(c: Clip): boolean {
+  return c.title !== undefined;
+}
+export function isMedia(c: Clip): boolean {
+  return c.path !== undefined;
+}
+
+/** Quanto o clipe ocupa na timeline. */
+export function clipDuration(c: Clip): number {
+  return Math.max(0, c.durationMs);
+}
+
+/** Fim do clipe na timeline (exclusivo). */
+export function clipEnd(c: Clip): number {
+  return c.startMs + clipDuration(c);
+}
+
+/** Fim da janela-fonte (só faz sentido em mídia). */
+export function srcOut(c: Clip): number {
+  return (c.srcIn ?? 0) + clipDuration(c);
+}
+
+/** Fim da trilha = maior `clipEnd`. Trilha vazia = 0. */
+export function trackEnd(track: Track): number {
+  let end = 0;
+  for (const c of track.clips) end = Math.max(end, clipEnd(c));
+  return end;
+}
+
+/** Duração do filme = a trilha mais longa. */
+export function timelineDuration(tl: Timeline): number {
+  let d = 0;
+  for (const t of tl.tracks) d = Math.max(d, trackEnd(t));
+  return d;
+}
+
+/** Total de clipes (todas as trilhas) — a UI conta isto no cabeçalho. */
+export function clipCount(tl: Timeline): number {
+  return tl.tracks.reduce((n, t) => n + t.clips.length, 0);
+}
+
+/** A trilha de vídeo base (a primeira). É ela que a prévia mostra e a que o
+ *  import alimenta. `null` se não houver trilha de vídeo (não deve acontecer). */
+export function baseVideoTrack(tl: Timeline): Track | null {
+  return tl.tracks.find((t) => t.kind === "video") ?? null;
+}
+
+export interface Located {
+  clip: Clip;
+  track: Track;
+  ti: number;
+  ci: number;
+}
+
+/** Acha um clipe pelo id, dizendo em que trilha/índice ele está. */
+export function locate(tl: Timeline, id: string): Located | null {
+  for (let ti = 0; ti < tl.tracks.length; ti++) {
+    const track = tl.tracks[ti];
+    const ci = track.clips.findIndex((c) => c.id === id);
+    if (ci >= 0) return { clip: track.clips[ci], track, ti, ci };
+  }
+  return null;
+}
+
+export interface Hit {
+  clip: Clip;
+  index: number;
+  /** Instante DENTRO do arquivo-fonte correspondente ao `t` pedido. */
+  srcTime: number;
+  /** Onde o clipe começa na timeline. */
+  clipStart: number;
+}
+
 /**
- * Corta a timeline no instante `at`, virando um clipe em dois.
+ * Dado um instante da timeline, qual clipe de MÍDIA de uma trilha toca ali.
+ * A prévia e o playhead perguntam isto o tempo todo (na trilha base).
  *
- * Não é erro cortar onde não dá — é um não-evento: cortar em cima de uma emenda
- * (ou no 0, ou no fim) devolve a MESMA trilha. Assim o atalho `S` nunca "dá
- * erro" na cara do usuário; ele só não faz nada quando não há o que fazer.
- * Devolver a mesma referência também deixa o undo/redo não empilhar lixo.
+ * Se dois clipes se sobrepõem (crossfade), quem responde é o de CIMA — o
+ * último na ordem — que é o que o olho vê no fim da transição. Buraco = `null`.
  */
-export function split(track: Track, at: number): Track {
-  const hit = timeToClip(track, at);
-  if (!hit) return track;
-  const srcAt = hit.srcTime;
-  // Em cima da borda do clipe não há corte: já existe emenda ali.
-  if (srcAt <= hit.clip.srcIn || srcAt >= hit.clip.srcOut) return track;
-
-  const left: Clip = { ...hit.clip, srcOut: srcAt };
-  const right: Clip = { ...hit.clip, id: newId(), srcIn: srcAt };
-  const clips = [...track.clips];
-  clips.splice(hit.index, 1, left, right);
-  return { clips };
+export function timeToClip(track: Track | null, t: number): Hit | null {
+  if (!track || t < 0) return null;
+  let best: Hit | null = null;
+  for (let i = 0; i < track.clips.length; i++) {
+    const c = track.clips[i];
+    const d = clipDuration(c);
+    if (d === 0 || !isMedia(c)) continue;
+    if (t >= c.startMs && t < clipEnd(c)) {
+      best = { clip: c, index: i, srcTime: (c.srcIn ?? 0) + (t - c.startMs), clipStart: c.startMs };
+    }
+  }
+  return best;
 }
 
 /**
- * Apara um clipe (nova janela sobre o mesmo arquivo).
- *
- * Blindagens (o usuário arrasta a alça, ele não digita ms):
- * - `in`/`out` invertidos ⇒ trocados. Arrastar a alça esquerda passando da
- *   direita é gesto comum; virar erro seria pedantice.
- * - a janela não pode sair do arquivo (`0..limite`), senão o export dá preto.
- * - janela vazia (`in == out`) ⇒ ignorada: quem quer sumir com o clipe usa
- *   `remove` (e o undo devolve). Aparar até zero é acidente, não intenção.
+ * O último quadro do filme — o `Hit` que o `timeToClip` de propósito NÃO dá no
+ * fim exato. A prévia precisa mostrar algo em `t === total` (é onde o play
+ * para); sem isto, assistir até o fim trocava o filme por "importe um vídeo".
  */
-export function trim(track: Track, id: string, srcIn: number, srcOut: number, srcLimit?: number): Track {
-  const i = track.clips.findIndex((c) => c.id === id);
-  if (i < 0) return track;
+export function endHit(track: Track | null): Hit | null {
+  if (!track) return null;
+  let last: Hit | null = null;
+  let bestEnd = -1;
+  for (let i = 0; i < track.clips.length; i++) {
+    const c = track.clips[i];
+    if (clipDuration(c) === 0 || !isMedia(c)) continue;
+    if (clipEnd(c) >= bestEnd) {
+      bestEnd = clipEnd(c);
+      last = { clip: c, index: i, srcTime: srcOut(c), clipStart: c.startMs };
+    }
+  }
+  return last;
+}
 
-  let a = Math.round(Math.min(srcIn, srcOut));
-  let b = Math.round(Math.max(srcIn, srcOut));
-  const max = srcLimit ?? Math.max(b, track.clips[i].srcOut);
-  a = Math.max(0, Math.min(a, max));
-  b = Math.max(0, Math.min(b, max));
-  if (b - a <= 0) return track;
-
-  const clips = [...track.clips];
-  clips[i] = { ...clips[i], srcIn: a, srcOut: b };
-  return { clips };
+/** Onde cada clipe da trilha começa (pra UI). */
+export function clipStarts(track: Track): number[] {
+  return track.clips.map((c) => c.startMs);
 }
 
 /**
- * Reordena: tira o clipe de onde está e põe no índice `toIndex` da lista JÁ SEM
- * ele — que é exatamente o que o olho vê ao arrastar. Índice fora da faixa é
- * grampeado (soltar depois do último = último), nunca erro.
+ * A sobreposição (crossfade) entre este clipe e o SEGUINTE da mesma trilha, em
+ * ms. Zero quando não há sobreposição. É a duração da transição — não há campo
+ * separado, a geometria É a transição.
  */
-export function move(track: Track, id: string, toIndex: number): Track {
-  const from = track.clips.findIndex((c) => c.id === id);
-  if (from < 0) return track;
-  const clips = [...track.clips];
-  const [c] = clips.splice(from, 1);
-  const to = Math.max(0, Math.min(Math.round(toIndex), clips.length));
-  if (to === from) return track;
-  clips.splice(to, 0, c);
-  return { clips };
-}
-
-export function remove(track: Track, id: string): Track {
-  const clips = track.clips.filter((c) => c.id !== id);
-  return clips.length === track.clips.length ? track : { clips };
-}
-
-export function append(track: Track, clip: Clip): Track {
-  return { clips: [...track.clips, clip] };
+export function overlapWithNext(track: Track, index: number): number {
+  const a = track.clips[index];
+  const b = track.clips[index + 1];
+  if (!a || !b) return 0;
+  const ov = clipEnd(a) - b.startMs;
+  return Math.max(0, Math.min(ov, clipDuration(a), clipDuration(b)));
 }
 
 /* ------------------------------------------------------------------ */
-/* Undo / redo                                                         */
+/* Construção                                                          */
+/* ------------------------------------------------------------------ */
+
+/** Uma timeline nova: uma trilha de vídeo, uma de áudio, ambas vazias. */
+export function newTimeline(): Timeline {
+  return {
+    version: TIMELINE_VERSION,
+    tracks: [
+      { id: newId("vt"), kind: "video", clips: [] },
+      { id: newId("at"), kind: "audio", clips: [] },
+    ],
+  };
+}
+
+/** Ordena os clipes de uma trilha por `startMs` (empate: mantém a ordem). */
+function sortClips(clips: Clip[]): Clip[] {
+  return [...clips].sort((a, b) => a.startMs - b.startMs);
+}
+
+function withTrack(tl: Timeline, ti: number, clips: Clip[]): Timeline {
+  const tracks = tl.tracks.slice();
+  tracks[ti] = { ...tracks[ti], clips: sortClips(clips) };
+  return { ...tl, tracks };
+}
+
+/**
+ * Acrescenta um clipe de mídia no FIM da trilha base (import). Entra logo depois
+ * do último clipe da trilha — sem buraco, como a v0.1 fazia. Se não houver
+ * trilha de vídeo, é não-evento (não deve acontecer).
+ */
+export function appendMedia(
+  tl: Timeline,
+  media: { path: string; srcIn: number; srcOut: number },
+): Timeline {
+  const ti = tl.tracks.findIndex((t) => t.kind === "video");
+  if (ti < 0) return tl;
+  const track = tl.tracks[ti];
+  const start = trackEnd(track);
+  const clip: Clip = {
+    id: newId(),
+    startMs: start,
+    durationMs: Math.max(0, media.srcOut - media.srcIn),
+    path: media.path,
+    srcIn: media.srcIn,
+  };
+  return withTrack(tl, ti, [...track.clips, clip]);
+}
+
+/** Adiciona uma trilha (vídeo empilha por cima; áudio mixa). */
+export function addTrack(tl: Timeline, kind: TrackKind): Timeline {
+  return { ...tl, tracks: [...tl.tracks, { id: newId(kind === "video" ? "vt" : "at"), kind, clips: [] }] };
+}
+
+/**
+ * Cria um clipe de título numa trilha de vídeo. Fica na posição pedida, opaco,
+ * pela duração pedida. O texto/fonte/cor vêm com padrão sensato — a UI ajusta.
+ */
+export function addTitle(
+  tl: Timeline,
+  trackId: string,
+  startMs: number,
+  durationMs: number,
+  props: TitleProps,
+): Timeline {
+  const ti = tl.tracks.findIndex((t) => t.id === trackId && t.kind === "video");
+  if (ti < 0) return tl;
+  const clip: Clip = {
+    id: newId("t"),
+    startMs: Math.max(0, Math.round(startMs)),
+    durationMs: Math.max(100, Math.round(durationMs)),
+    title: props,
+  };
+  return withTrack(tl, ti, [...tl.tracks[ti].clips, clip]);
+}
+
+/** Padrão de um título novo. */
+export function defaultTitle(text = "Título"): TitleProps {
+  return { text, fontSizePx: 48, color: "#ffffff", anchor: "bottom" };
+}
+
+/* ------------------------------------------------------------------ */
+/* Edição (puro; devolve a MESMA referência quando é não-evento)       */
 /* ------------------------------------------------------------------ */
 
 /**
- * Histórico de ESTADOS (não de comandos). Cabe porque uma trilha é uma lista
- * rasa de objetinhos: guardar 100 retratos dela custa nada, e retrato não tem
- * como "desfazer errado" — o inverso de um comando, tem.
+ * Corta um clipe no instante `at` da timeline, virando um em dois. Não é erro
+ * cortar onde não dá (na borda, no vazio) — é não-evento, e devolve a MESMA
+ * timeline (assim o `S` nunca "dá erro" e o undo não empilha lixo).
+ */
+export function splitAt(tl: Timeline, id: string, at: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const { clip, ti } = loc;
+  // Em cima da borda não há corte: já existe emenda ali.
+  if (at <= clip.startMs || at >= clipEnd(clip)) return tl;
+
+  const leftDur = at - clip.startMs;
+  const left: Clip = { ...clip, durationMs: leftDur };
+  const right: Clip = {
+    ...clip,
+    id: newId(),
+    startMs: at,
+    durationMs: clipDuration(clip) - leftDur,
+    // Mídia: a metade da direita começa mais adiante no arquivo-fonte.
+    ...(isMedia(clip) ? { srcIn: (clip.srcIn ?? 0) + leftDur } : {}),
+  };
+  const clips = tl.tracks[ti].clips.slice();
+  clips.splice(loc.ci, 1, left, right);
+  return withTrack(tl, ti, clips);
+}
+
+/**
+ * Apara um clipe por uma das bordas, arrastando-a pra `timelineMs`.
  *
- * Editor sem undo não é produto. É o requisito, não um extra.
+ * - **borda "in"**: a borda ESQUERDA anda no tempo. O conteúdo do arquivo que
+ *   aparece naquela borda NÃO muda de lugar (arrastar o começo revela/esconde o
+ *   miolo). Logo `srcIn` anda junto com `startMs`. Blindado: `srcIn` não desce
+ *   de 0, e a janela não fica vazia.
+ * - **borda "out"**: a borda DIREITA anda; `srcOut` (= start+dur) não pode
+ *   passar do fim do arquivo (`srcLimit`).
+ *
+ * Título não tem arquivo: aparar só muda a duração/posição na timeline.
+ */
+export function setClipEdge(
+  tl: Timeline,
+  id: string,
+  edge: "in" | "out",
+  timelineMs: number,
+  srcLimit?: number,
+): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const { clip, ti } = loc;
+  const end = clipEnd(clip);
+  const media = isMedia(clip);
+  let next: Clip;
+
+  if (edge === "in") {
+    // A borda esquerda não pode passar da direita (mínimo 1 ms de clipe) nem
+    // fazer o `srcIn` ficar negativo.
+    const minStart = media ? clip.startMs - (clip.srcIn ?? 0) : 0;
+    const newStart = Math.round(Math.max(minStart, Math.min(timelineMs, end - 1)));
+    const delta = newStart - clip.startMs;
+    if (delta === 0) return tl;
+    next = {
+      ...clip,
+      startMs: newStart,
+      durationMs: clipDuration(clip) - delta,
+      ...(media ? { srcIn: (clip.srcIn ?? 0) + delta } : {}),
+    };
+  } else {
+    // A borda direita não pode passar do começo nem do fim do arquivo.
+    let newEnd = Math.round(Math.max(clip.startMs + 1, timelineMs));
+    if (media && srcLimit !== undefined) {
+      const maxEnd = clip.startMs + (srcLimit - (clip.srcIn ?? 0));
+      newEnd = Math.min(newEnd, maxEnd);
+    }
+    const newDur = newEnd - clip.startMs;
+    if (newDur === clipDuration(clip)) return tl;
+    next = { ...clip, durationMs: newDur };
+  }
+
+  const clips = tl.tracks[ti].clips.slice();
+  clips[loc.ci] = next;
+  return withTrack(tl, ti, clips);
+}
+
+/**
+ * Move um clipe no tempo e/ou entre trilhas. `toTrackId` pode ser a mesma
+ * trilha (só reposiciona no tempo). Título não vai pra trilha de áudio.
+ * `newStartMs` é grampeado em 0. Sobrepor vira crossfade — é intencional.
+ */
+export function moveClip(tl: Timeline, id: string, toTrackId: string, newStartMs: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const destTi = tl.tracks.findIndex((t) => t.id === toTrackId);
+  if (destTi < 0) return tl;
+  const dest = tl.tracks[destTi];
+  // Título só em trilha de vídeo.
+  if (isTitle(loc.clip) && dest.kind !== "video") return tl;
+
+  const start = Math.max(0, Math.round(newStartMs));
+  if (destTi === loc.ti && start === loc.clip.startMs) return tl;
+
+  const moved: Clip = { ...loc.clip, startMs: start };
+  let tracks = tl.tracks.slice();
+  // Tira da origem.
+  tracks[loc.ti] = {
+    ...tracks[loc.ti],
+    clips: tracks[loc.ti].clips.filter((c) => c.id !== id),
+  };
+  // Põe no destino (re-lê o índice: origem e destino podem ser a mesma).
+  tracks[destTi] = {
+    ...tracks[destTi],
+    clips: sortClips([...tracks[destTi].clips, moved]),
+  };
+  return { ...tl, tracks };
+}
+
+export function removeClip(tl: Timeline, id: string): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const clips = loc.track.clips.filter((c) => c.id !== id);
+  return withTrack(tl, loc.ti, clips);
+}
+
+/**
+ * Aplica um patch de propriedades num clipe (volume, fade, opacidade, título).
+ * Não mexe em posição/duração — pra isso há `moveClip`/`setClipEdge`. Ignora
+ * chaves `undefined` pra não apagar o que não veio.
+ */
+export function updateClip(tl: Timeline, id: string, patch: Partial<Clip>): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const next: Clip = { ...loc.clip };
+  const rec = next as unknown as Record<string, unknown>;
+  let changed = false;
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    if (rec[k] !== v) {
+      rec[k] = v;
+      changed = true;
+    }
+  }
+  if (!changed) return tl;
+  const clips = loc.track.clips.slice();
+  clips[loc.ci] = next;
+  return withTrack(tl, loc.ti, clips);
+}
+
+/**
+ * Define a transição (crossfade) entre este clipe e o SEGUINTE da trilha, em ms.
+ * Como a transição é a SOBREPOSIÇÃO, mexer nela move o clipe seguinte pra dentro
+ * (ou pra fora) deste. O valor é grampeado pra não passar da duração de nenhum
+ * dos dois nem virar negativo.
+ */
+export function setTransition(tl: Timeline, id: string, transitionMs: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const { track, ci, ti } = loc;
+  const a = track.clips[ci];
+  const b = track.clips[ci + 1];
+  if (!b) return tl;
+  const want = Math.max(0, Math.min(Math.round(transitionMs), clipDuration(a), clipDuration(b)));
+  // A sobreposição desejada: o seguinte começa em (fim de A − transição).
+  const newStart = clipEnd(a) - want;
+  if (newStart === b.startMs) return tl;
+  const clips = track.clips.slice();
+  clips[ci + 1] = { ...b, startMs: Math.max(0, newStart) };
+  return withTrack(tl, ti, clips);
+}
+
+/* ------------------------------------------------------------------ */
+/* Undo / redo (histórico de ESTADOS, genérico)                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Histórico de ESTADOS (não de comandos). Cabe porque uma timeline é uma árvore
+ * rasa de objetinhos: guardar 200 retratos custa pouco, e retrato não tem como
+ * "desfazer errado" — o inverso de um comando, tem. Editor sem undo não é
+ * produto: é o requisito, não um extra.
  */
 export interface History<T> {
   past: T[];
@@ -216,31 +523,21 @@ export function initHistory<T>(present: T): History<T> {
   return { past: [], present, future: [] };
 }
 
-/**
- * Empurra um novo estado. Se a operação não mudou nada (as puras acima devolvem
- * a MESMA referência nesse caso), o histórico não se mexe: senão o Ctrl+Z do
- * usuário gastaria passos desfazendo não-eventos.
- */
+/** Empurra um novo estado. Não-evento (mesma referência) não mexe no histórico:
+ *  senão o Ctrl+Z gastaria passos desfazendo nada. */
 export function pushHistory<T>(h: History<T>, next: T): History<T> {
   if (next === h.present) return h;
   const past = [...h.past, h.present].slice(-HISTORY_LIMIT);
-  // Editar depois de desfazer queima o futuro — é o contrato de todo editor.
+  // Editar depois de desfazer queima o futuro — contrato de todo editor.
   return { past, present: next, future: [] };
 }
 
 /**
- * Troca o presente SEM mexer no passado nem no futuro.
- *
- * Existe por causa do arrasto contínuo (aparar pela alça): o `pointermove`
- * dispara dezenas de vezes por segundo e empilhar cada um fazia duas maldades.
- * A óbvia: desfazer UM aparo virava "segurar Ctrl+Z" — medido na janela real, um
- * arrasto de 80px voltava 4px por Ctrl+Z. A silenciosa, e pior: cada passo
- * intermediário comia uma vaga do `HISTORY_LIMIT`, então um arrasto demorado
- * empurrava pra fora do histórico o import e os cortes DE VERDADE.
- *
- * Quem arrasta empilha UMA vez, no primeiro movimento (guardando o estado de
- * antes), e daí em diante só troca o presente. O resultado é o que o usuário
- * espera: um aparo = um Ctrl+Z.
+ * Troca o presente SEM mexer no passado nem no futuro. Existe pro arrasto
+ * contínuo (aparar/mover pela alça): o `pointermove` dispara dezenas de vezes
+ * por segundo; empilhar cada um faria "um arrasto = segurar Ctrl+Z" e ainda
+ * comeria as vagas do histórico, empurrando pra fora os cortes DE VERDADE.
+ * Quem arrasta empilha UMA vez (no 1º movimento) e daí só troca o presente.
  */
 export function replacePresent<T>(h: History<T>, next: T): History<T> {
   if (next === h.present) return h;

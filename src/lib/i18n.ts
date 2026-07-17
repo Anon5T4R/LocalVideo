@@ -135,8 +135,42 @@ const pt = {
   "sc.arrowsKey": "← →",
   "sc.jkl": "J/K/L — ré, pausa, frente (aperte de novo pra acelerar)",
   "sc.export": "Exportar",
+  "sc.addTitle": "Adicionar título no playhead",
 
   "top.export": "Exportar",
+
+  "preview.multitrack":
+    "Prévia da trilha base. A composição completa (trilhas, transições, títulos) aparece na exportação.",
+
+  "exp.doneCompile": "Exportado com a composição da timeline (trilhas, transições, títulos e áudio).",
+  "exp.whyMultitrack":
+    "Sua timeline usa mais de uma trilha, transição, título ou ajuste de áudio. Isso não é uma cópia simples — o LocalVideo compõe tudo num vídeo só (recodificando).",
+
+  "tl.addVideo": "Nova trilha de vídeo",
+  "tl.addAudio": "Nova trilha de áudio",
+  "tl.dragHint2":
+    "Arraste pra mover (no tempo e entre trilhas) · bordas pra aparar · a alça da emenda faz a transição",
+
+  "title.defaultText": "Título",
+  "title.add": "Adicionar título",
+  "title.text": "Texto",
+  "title.size": "Tamanho",
+  "title.color": "Cor",
+  "title.position": "Posição",
+  "title.top": "Em cima",
+  "title.center": "No meio",
+  "title.bottom": "Embaixo",
+  "title.duration": "Duração (s)",
+
+  "clip.titleClip": "Título selecionado",
+  "clip.mute": "Silenciar este clipe",
+  "clip.volume": "Volume",
+  "clip.fadeIn": "Fade de entrada (s)",
+  "clip.fadeOut": "Fade de saída (s)",
+  "clip.opacity": "Opacidade",
+  "clip.transition": "Arraste pra criar a transição (crossfade) com o próximo",
+  "clip.noAudioHint": "Este clipe não tem áudio.",
+  "clip.dragHint": "Arraste o clipe pra mover no tempo ou entre trilhas · playhead em {at}",
 
   "err.noRuntime": "o runtime de mídia (ffmpeg) não está instalado",
   "err.noVideo": "este arquivo não tem trilha de vídeo",
@@ -304,8 +338,42 @@ const en: Record<MessageKey, string> = {
   "sc.arrowsKey": "← →",
   "sc.jkl": "J/K/L — back, pause, forward (press again to speed up)",
   "sc.export": "Export",
+  "sc.addTitle": "Add a title at the playhead",
 
   "top.export": "Export",
+
+  "preview.multitrack":
+    "Preview of the base track. The full composition (tracks, transitions, titles) shows up in the export.",
+
+  "exp.doneCompile": "Exported with the full timeline composition (tracks, transitions, titles and audio).",
+  "exp.whyMultitrack":
+    "Your timeline uses more than one track, a transition, a title or an audio tweak. That's not a plain copy — LocalVideo composes it all into a single video (re-encoding).",
+
+  "tl.addVideo": "New video track",
+  "tl.addAudio": "New audio track",
+  "tl.dragHint2":
+    "Drag to move (in time and between tracks) · edges to trim · the seam handle makes the transition",
+
+  "title.defaultText": "Title",
+  "title.add": "Add title",
+  "title.text": "Text",
+  "title.size": "Size",
+  "title.color": "Color",
+  "title.position": "Position",
+  "title.top": "Top",
+  "title.center": "Center",
+  "title.bottom": "Bottom",
+  "title.duration": "Duration (s)",
+
+  "clip.titleClip": "Selected title",
+  "clip.mute": "Mute this clip",
+  "clip.volume": "Volume",
+  "clip.fadeIn": "Fade in (s)",
+  "clip.fadeOut": "Fade out (s)",
+  "clip.opacity": "Opacity",
+  "clip.transition": "Drag to create the transition (crossfade) with the next clip",
+  "clip.noAudioHint": "This clip has no audio.",
+  "clip.dragHint": "Drag the clip to move it in time or between tracks · playhead at {at}",
 
   "err.noRuntime": "the media runtime (ffmpeg) isn't installed",
   "err.noVideo": "this file has no video track",
@@ -474,8 +542,42 @@ const es: Record<MessageKey, string> = {
   "sc.arrowsKey": "← →",
   "sc.jkl": "J/K/L — atrás, pausa, adelante (púlsalo otra vez para acelerar)",
   "sc.export": "Exportar",
+  "sc.addTitle": "Añadir un título en el cabezal",
 
   "top.export": "Exportar",
+
+  "preview.multitrack":
+    "Vista previa de la pista base. La composición completa (pistas, transiciones, títulos) aparece en la exportación.",
+
+  "exp.doneCompile": "Exportado con la composición de la línea de tiempo (pistas, transiciones, títulos y audio).",
+  "exp.whyMultitrack":
+    "Tu línea de tiempo usa más de una pista, una transición, un título o un ajuste de audio. Eso no es una copia simple — LocalVideo lo compone todo en un solo vídeo (recodificando).",
+
+  "tl.addVideo": "Nueva pista de vídeo",
+  "tl.addAudio": "Nueva pista de audio",
+  "tl.dragHint2":
+    "Arrastra para mover (en el tiempo y entre pistas) · los bordes para recortar · el tirador de la unión hace la transición",
+
+  "title.defaultText": "Título",
+  "title.add": "Añadir título",
+  "title.text": "Texto",
+  "title.size": "Tamaño",
+  "title.color": "Color",
+  "title.position": "Posición",
+  "title.top": "Arriba",
+  "title.center": "Centro",
+  "title.bottom": "Abajo",
+  "title.duration": "Duración (s)",
+
+  "clip.titleClip": "Título seleccionado",
+  "clip.mute": "Silenciar este clip",
+  "clip.volume": "Volumen",
+  "clip.fadeIn": "Fundido de entrada (s)",
+  "clip.fadeOut": "Fundido de salida (s)",
+  "clip.opacity": "Opacidad",
+  "clip.transition": "Arrastra para crear la transición (crossfade) con el siguiente clip",
+  "clip.noAudioHint": "Este clip no tiene audio.",
+  "clip.dragHint": "Arrastra el clip para moverlo en el tiempo o entre pistas · cabezal en {at}",
 
   "err.noRuntime": "el runtime de medios (ffmpeg) no está instalado",
   "err.noVideo": "este archivo no tiene pista de vídeo",
