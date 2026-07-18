@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  detachAudio,
   __resetIds,
   addTitle,
   addTrack,
@@ -418,5 +419,54 @@ describe("undo/redo", () => {
     h = undo(h);
     expect(h.present).toBe(original);
     expect(original.tracks[0].clips[0].volume).toBeUndefined();
+  });
+});
+
+describe("detachAudio — separar o áudio do vídeo", () => {
+  it("cala o vídeo e cria uma trilha de áudio no mesmo lugar", () => {
+    __resetIds();
+    let tl = newTimeline();
+    tl = appendMedia(tl, { path: "a.mp4", srcIn: 0, srcOut: 5000 });
+    const vid = tl.tracks[0].clips[0];
+
+    tl = detachAudio(tl, vid.id, 1);
+
+    // O vídeo original ficou mudo (o áudio não some, só para de tocar por ele).
+    expect(locate(tl, vid.id)!.clip.muted).toBe(true);
+    // O áudio foi pra uma trilha de áudio (reusa a vazia que o newTimeline traz).
+    const at = tl.tracks.find((t) => t.kind === "audio" && t.clips.length > 0)!;
+    expect(at).toBeTruthy();
+    expect(at.clips).toHaveLength(1);
+    const a = at.clips[0];
+    expect(a.startMs).toBe(vid.startMs);
+    expect(a.durationMs).toBe(vid.durationMs);
+    expect(a.path).toBe("a.mp4");
+    expect(a.audioStreamIndex).toBe(0);
+  });
+
+  it("duas faixas viram DOIS clipes de áudio, cada um na sua faixa-fonte", () => {
+    // O caso do LocalRecord: mic (0) + áudio do sistema (1).
+    __resetIds();
+    let tl = newTimeline();
+    tl = appendMedia(tl, { path: "rec.mp4", srcIn: 0, srcOut: 5000 });
+    const vid = tl.tracks[0].clips[0];
+
+    tl = detachAudio(tl, vid.id, 2);
+
+    const audio = tl.tracks.filter((t) => t.kind === "audio" && t.clips.length > 0);
+    // Duas faixas no mesmo trecho de tempo => duas trilhas (senão se sobreporiam).
+    expect(audio).toHaveLength(2);
+    const idxs = audio.flatMap((t) => t.clips.map((c) => c.audioStreamIndex)).sort();
+    expect(idxs).toEqual([0, 1]);
+  });
+
+  it("clipe já mudo ou título não faz nada (idempotente)", () => {
+    __resetIds();
+    let tl = newTimeline();
+    tl = appendMedia(tl, { path: "a.mp4", srcIn: 0, srcOut: 5000 });
+    const id = tl.tracks[0].clips[0].id;
+    const mudo = detachAudio(tl, id, 1);
+    // segunda vez sobre o clipe já mudo: nada muda
+    expect(detachAudio(mudo, id, 1)).toBe(mudo);
   });
 });

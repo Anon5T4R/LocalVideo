@@ -29,11 +29,32 @@ pub struct MediaInfo {
     pub frame_rate: String,
     pub avg_frame_rate: String,
     pub video_codec: String,
+    /// Codec da PRIMEIRA faixa de áudio. Mantido pra não quebrar quem já lê isto;
+    /// a lista completa é `audio_tracks`.
     pub audio_codec: Option<String>,
     pub has_audio: bool,
+    /// TODAS as faixas de áudio, em ordem. Uma gravação do LocalRecord com faixas
+    /// separadas traz duas aqui (microfone + áudio do sistema) — antes o app via
+    /// só a primeira e a segunda sumia na importação sem aviso.
+    pub audio_tracks: Vec<AudioStreamInfo>,
     /// Total de streams do container (vídeo + áudio + legenda + dados).
     pub stream_count: usize,
     pub size_bytes: u64,
+}
+
+/// Uma faixa de áudio dentro do arquivo.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioStreamInfo {
+    /// Índice do stream NO ARQUIVO (o `a:N` do ffmpeg), não a posição na lista —
+    /// é ele que vai pro `-map`/`filter_complex`, então tem que ser o real.
+    pub index: u32,
+    pub codec: String,
+    pub channels: u32,
+    /// O `title` da metadata, quando existe. O LocalRecord grava "Microfone" e
+    /// "Áudio do sistema"; é o que deixa o usuário saber qual faixa é qual.
+    pub title: Option<String>,
+    pub language: Option<String>,
 }
 
 fn get_str(v: &serde_json::Value, k: &str) -> String {
@@ -69,6 +90,31 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
         .ok_or_else(|| "no-video".to_string())?;
     let audio = streams.iter().find(|s| get_str(s, "codec_type") == "audio");
 
+    // TODAS as faixas de áudio, com o índice REAL do stream (não a posição na
+    // lista de áudios): num arquivo `vídeo, áudio, áudio` o segundo áudio é o
+    // stream 2, e é 2 que o ffmpeg quer no `-map`.
+    let audio_tracks: Vec<AudioStreamInfo> = streams
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| get_str(s, "codec_type") == "audio")
+        .map(|(idx, s)| {
+            let tags = s.get("tags");
+            let tag = |k: &str| {
+                tags.and_then(|t| t.get(k))
+                    .and_then(|x| x.as_str())
+                    .map(|x| x.to_string())
+                    .filter(|x| !x.is_empty())
+            };
+            AudioStreamInfo {
+                index: idx as u32,
+                codec: get_str(s, "codec_name"),
+                channels: s.get("channels").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                title: tag("title"),
+                language: tag("language"),
+            }
+        })
+        .collect();
+
     // Duração: o container manda; se faltar (alguns MKV), cai pro stream de vídeo.
     let dur_s = get_f64(&format, "duration")
         .or_else(|| get_f64(video, "duration"))
@@ -84,6 +130,7 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
         video_codec: get_str(video, "codec_name"),
         audio_codec: audio.map(|a| get_str(a, "codec_name")),
         has_audio: audio.is_some(),
+        audio_tracks,
         stream_count: streams.len(),
         size_bytes: get_f64(&format, "size").unwrap_or(0.0).max(0.0) as u64,
     })
@@ -305,6 +352,47 @@ mod tests {
         assert!(i.has_audio);
         assert_eq!(i.stream_count, 2);
         assert_eq!(i.size_bytes, 1048576);
+    }
+
+    /// Uma gravação do LocalRecord com faixas separadas: vídeo + DOIS áudios
+    /// com `title`. Antes o app via só a primeira e a segunda sumia sem aviso.
+    const DUAS_FAIXAS: &str = r#"{
+      "format": { "duration": "50.0", "size": "2000000" },
+      "streams": [
+        { "codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080,
+          "r_frame_rate": "30/1", "avg_frame_rate": "30/1" },
+        { "codec_type": "audio", "codec_name": "aac", "channels": 2,
+          "tags": { "title": "Microfone" } },
+        { "codec_type": "audio", "codec_name": "aac", "channels": 2,
+          "tags": { "title": "Áudio do sistema" } }
+      ]
+    }"#;
+
+    #[test]
+    fn le_todas_as_faixas_de_audio_com_indice_real() {
+        let i = info_from_probe_json("C:/v.mp4", DUAS_FAIXAS).unwrap();
+        assert_eq!(i.audio_tracks.len(), 2);
+        // O índice é o do STREAM no arquivo (vídeo=0), não a posição na lista:
+        // o mic é o stream 1 e o áudio do sistema é o 2 — e é isso que vai pro
+        // `-map`. Trocar por 0 e 1 mandaria o ffmpeg mapear o vídeo como áudio.
+        assert_eq!(i.audio_tracks[0].index, 1);
+        assert_eq!(i.audio_tracks[1].index, 2);
+        assert_eq!(i.audio_tracks[0].title.as_deref(), Some("Microfone"));
+        assert_eq!(i.audio_tracks[1].title.as_deref(), Some("Áudio do sistema"));
+        assert_eq!(i.audio_tracks[0].channels, 2);
+        // `audio_codec` (o campo antigo) segue apontando pra primeira faixa.
+        assert_eq!(i.audio_codec.as_deref(), Some("aac"));
+    }
+
+    #[test]
+    fn video_mudo_tem_lista_de_audio_vazia() {
+        // Sem faixa nenhuma: lista vazia, não um item fantasma.
+        let json = r#"{ "format": { "duration": "5" }, "streams": [
+          { "codec_type": "video", "codec_name": "h264", "width": 640, "height": 480,
+            "r_frame_rate": "30/1", "avg_frame_rate": "30/1" } ] }"#;
+        let i = info_from_probe_json("C:/v.mp4", json).unwrap();
+        assert!(i.audio_tracks.is_empty());
+        assert!(!i.has_audio);
     }
 
     #[test]

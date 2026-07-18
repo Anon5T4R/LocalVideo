@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { t } from "../lib/i18n";
 import Icon from "./Icon";
+import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { formatDuration, nearestThumb } from "../lib/probe";
 import { snapMove, snapValue } from "../lib/snap";
 import {
@@ -78,6 +79,9 @@ export default function Timeline() {
   const doAddTrack = useEditor((s) => s.doAddTrack);
   const rippleMode = useEditor((s) => s.rippleMode);
   const setRippleMode = useEditor((s) => s.setRippleMode);
+  const doDetachAudio = useEditor((s) => s.doDetachAudio);
+  const doAddTitle = useEditor((s) => s.doAddTitle);
+  const [menu, setMenu] = useState<{ x: number; y: number; clip: Clip } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const laneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -287,6 +291,11 @@ export default function Timeline() {
                   onTransDown={(e) =>
                     beginDrag(e, { kind: "trans", id: c.id, x0: e.clientX, trans0: overlapWithNext(track, i) })
                   }
+                  onContext={(e) => {
+                    e.preventDefault();
+                    select(c.id);
+                    setMenu({ x: e.clientX, y: e.clientY, clip: c });
+                  }}
                 />
               ))}
               {/* o trecho que SAIU pela cabeça durante o ripple na borda IN */}
@@ -317,8 +326,44 @@ export default function Timeline() {
       </div>
 
       <div className="tl-foot muted small">{clipCount > 0 ? t("tl.dragHint2") : t("empty.tip")}</div>
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={clipMenuItems(menu.clip, media, {
+            split: doSplit,
+            detach: () => doDetachAudio(menu.clip.id),
+            addTitle: doAddTitle,
+            remove: () => doRemove(menu.clip.id),
+          })}
+        />
+      ) : null}
     </div>
   );
+}
+
+/** As ações do menu de contexto de um clipe. Função pura (sem hook, sem store):
+ *  recebe o clipe e a mídia, decide o que faz sentido, e devolve os itens. Fora
+ *  do componente pra ser testável e pra não remontar a cada render. */
+function clipMenuItems(
+  clip: Clip,
+  media: Record<string, { audioTracks: { index: number }[] }>,
+  act: { split: () => void; detach: () => void; addTitle: () => void; remove: () => void },
+): MenuItem[] {
+  const info = clip.path ? media[clip.path] : undefined;
+  const nAudio = info?.audioTracks.length ?? 0;
+  // Separar áudio só faz sentido em clipe de mídia COM som e ainda não mudo.
+  const canDetach = isMedia(clip) && nAudio > 0 && !clip.muted;
+  const detachLabel =
+    nAudio > 1 ? t("tl.ctxDetachN", { n: String(nAudio) }) : t("tl.ctxDetach");
+  return [
+    { label: t("tl.split"), onClick: act.split, disabled: !isMedia(clip) },
+    { label: detachLabel, onClick: act.detach, disabled: !canDetach },
+    { label: t("title.add"), onClick: act.addTitle, divider: true },
+    { label: t("tl.remove"), onClick: act.remove, danger: true, divider: true },
+  ];
 }
 
 interface ClipViewProps {
@@ -335,6 +380,7 @@ interface ClipViewProps {
   onInDown: (e: React.PointerEvent) => void;
   onOutDown: (e: React.PointerEvent) => void;
   onTransDown: (e: React.PointerEvent) => void;
+  onContext: (e: React.MouseEvent) => void;
 }
 
 /** Um clipe na régua: mídia (miniaturas) ou título (chip de texto). */
@@ -365,6 +411,7 @@ function ClipView(p: ClipViewProps) {
         p.onSelect();
       }}
       onPointerDown={p.onBodyDown}
+      onContextMenu={p.onContext}
       title={isTitle(c) ? c.title!.text : baseName(c.path ?? "")}
     >
       {isMedia(c) ? (

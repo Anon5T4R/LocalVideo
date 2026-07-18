@@ -24,6 +24,7 @@ import {
   pushHistory,
   redo,
   removeClip,
+  detachAudio,
   replacePresent,
   setClipEdge,
   setClipSpeed,
@@ -108,6 +109,8 @@ interface EditorState {
   beginEdit: () => void;
   endEdit: () => void;
   doRemove: (id?: string) => void;
+  /** Separa o áudio do clipe selecionado (ou `id`) numa trilha de áudio. */
+  doDetachAudio: (id?: string) => void;
   doUndo: () => void;
   doRedo: () => void;
 
@@ -361,6 +364,19 @@ export const useEditor = create<EditorState>((set, get) => ({
       selectedId: get().selectedId === target ? null : get().selectedId,
     });
     clampPlayhead(set, get);
+  },
+
+  doDetachAudio: (id) => {
+    const target = id ?? get().selectedId;
+    if (!target) return;
+    const { history, media } = get();
+    const loc = locate(history.present, target);
+    // Quantas faixas de áudio o arquivo-fonte tem — vem do probe guardado na
+    // importação. Sem a info (não deveria acontecer), trata como uma faixa.
+    const count = loc?.clip.path ? (media[loc.clip.path]?.audioTracks.length ?? 1) : 1;
+    const next = detachAudio(history.present, target, Math.max(1, count));
+    if (next === history.present) return;
+    set({ history: pushHistory(history, next), dirty: true });
   },
 
   doUndo: () => {

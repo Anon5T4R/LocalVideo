@@ -470,6 +470,23 @@ describe("degenerateClips — preserva o -c copy instantâneo da v0.1", () => {
   });
 });
 
+describe("audioStreamIndex — a faixa certa (bug das 2 faixas do LocalRecord)", () => {
+  it("clipe sem indice usa `:a:0` explicito, nao `:a` ambiguo", () => {
+    // `[N:a]` cru casa com AS DUAS faixas e o ffmpeg pega so a primeira, calado.
+    const t = tl([vtrack([mediaClip("c1", 0, 5000)])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain("[0:a:0]");
+    expect(g).not.toMatch(/\[0:a\][^:]/);
+  });
+
+  it("clipe de audio apontando pra faixa 1 mapeia `:a:1`", () => {
+    const c: Clip = { id: "s1", startMs: 0, durationMs: 5000, path: A, srcIn: 0, audioStreamIndex: 1 };
+    const t = tl([vtrack([mediaClip("v1", 0, 5000)]), atrack([c])]);
+    const g = fc(filterComplexArgs(t, { [A]: src() }, "o.mp4"));
+    expect(g).toContain(":a:1]");
+  });
+});
+
 describe("filterComplexArgs — o compilador", () => {
   it("2 trilhas de vídeo → fundo preto + dois overlays + map [outv]", () => {
     const t = tl([

@@ -15,11 +15,26 @@ export interface RawMediaInfo {
   videoCodec: string;
   audioCodec: string | null;
   hasAudio: boolean;
+  /** TODAS as faixas de áudio do arquivo, em ordem, com o índice REAL do stream.
+   *  Um take do LocalRecord com faixas separadas traz duas (mic + sistema) —
+   *  antes o app via só a primeira e a segunda sumia na importação. */
+  audioTracks: AudioTrackInfo[];
   streamCount: number;
   sizeBytes: number;
 }
 
 /** O que o app usa: o cru + o fps já convertido. */
+/** Uma faixa de áudio dentro do arquivo (espelha `AudioStreamInfo` do Rust). */
+export interface AudioTrackInfo {
+  /** Índice do stream NO ARQUIVO — é ele que vai pro `-map`/`filter_complex`. */
+  index: number;
+  codec: string;
+  channels: number;
+  /** `title` da metadata: "Microfone", "Áudio do sistema". */
+  title: string | null;
+  language: string | null;
+}
+
 export interface MediaInfo extends RawMediaInfo {
   fps: number;
 }

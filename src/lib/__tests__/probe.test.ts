@@ -25,6 +25,7 @@ const raw = (over: Partial<RawMediaInfo> = {}): RawMediaInfo => ({
   videoCodec: "h264",
   audioCodec: "aac",
   hasAudio: true,
+      audioTracks: [],
   streamCount: 2,
   sizeBytes: 1024,
   ...over,

@@ -19,6 +19,7 @@ const info = (path: string): RawMediaInfo => ({
   videoCodec: "h264",
   audioCodec: null,
   hasAudio: false,
+      audioTracks: [],
   streamCount: 1,
   sizeBytes: 100,
 });

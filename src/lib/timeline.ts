@@ -120,6 +120,12 @@ export interface Clip {
   /* --- áudio (só faz sentido em clipe de mídia com som) --- */
   /** Silencia este clipe sem removê-lo. */
   muted?: boolean;
+  /** QUAL faixa de áudio do arquivo-fonte este clipe usa (o `a:N` do ffmpeg).
+   *  `undefined` = a primeira (0). Existe porque um take do LocalRecord traz
+   *  microfone (0) e áudio do sistema (1) em faixas separadas — sem isto o
+   *  export mandava `[idx:a]` cru, que num arquivo de duas faixas é AMBÍGUO: o
+   *  ffmpeg pegava só a primeira e a segunda sumia do vídeo, calada. */
+  audioStreamIndex?: number;
   /** Ganho linear. 1 = original, 0.5 = metade, 2 = dobro. `undefined` = 1. */
   volume?: number;
   fadeInMs?: number;
@@ -387,6 +393,57 @@ export function appendMedia(
     srcIn: media.srcIn,
   };
   return withTrack(tl, ti, [...track.clips, clip]);
+}
+
+/** Separa o áudio de um clipe de vídeo pra uma trilha de áudio própria.
+ *
+ *  O clipe de vídeo original fica MUDO (não perde o áudio — só para de tocá-lo),
+ *  e nasce um clipe de áudio no mesmo lugar do tempo, apontando pro mesmo
+ *  arquivo e pra mesma faixa. A partir daí dá pra mover, cortar ou ajustar o
+ *  volume do áudio sem tocar no vídeo — o pedido de "separar áudio do vídeo".
+ *
+ *  `audioTrackCount` vem do `MediaInfo` do arquivo (o store tem): com faixas
+ *  separadas (mic + sistema), cada uma vira um clipe de áudio próprio, cada um
+ *  com seu `audioStreamIndex`. Assim o take do LocalRecord de duas faixas abre
+ *  em duas trilhas editáveis, em vez de uma faixa colada no vídeo.
+ *
+ *  Função pura e sem efeito colateral: já mudo, ou sem áudio, devolve `tl` igual.
+ */
+export function detachAudio(tl: Timeline, id: string, audioTrackCount: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc || !isMedia(loc.clip) || loc.clip.muted) return tl;
+  const { clip } = loc;
+  const n = Math.max(1, audioTrackCount);
+  const end = clipEnd(clip);
+
+  // O vídeo cala — o áudio não some, só para de tocar por ele.
+  let out: Timeline = updateClip(tl, id, { muted: true });
+
+  // Cada faixa-fonte vira um clipe de áudio próprio. Faixas separadas (mic +
+  // sistema) coexistem no MESMO trecho de tempo, então cada uma precisa da sua
+  // trilha — senão se sobreporiam e virariam crossfade sem querer. Reusa uma
+  // trilha de áudio livre naquele intervalo antes de criar outra (o
+  // `newTimeline` já traz uma vazia; empilhar por cima dela sujaria a lista).
+  for (let k = 0; k < n; k++) {
+    const aclip: Clip = {
+      id: newId(),
+      startMs: clip.startMs,
+      durationMs: clip.durationMs,
+      path: clip.path,
+      srcIn: clip.srcIn ?? 0,
+      speed: clip.speed,
+      audioStreamIndex: k,
+    };
+    const ti = out.tracks.findIndex(
+      (t) => t.kind === "audio" && t.clips.every((c) => c.startMs >= end || clipEnd(c) <= clip.startMs),
+    );
+    if (ti >= 0) {
+      out = withTrack(out, ti, [...out.tracks[ti].clips, aclip]);
+    } else {
+      out = { ...out, tracks: [...out.tracks, { id: newId("at"), kind: "audio", clips: [aclip] }] };
+    }
+  }
+  return out;
 }
 
 /** Adiciona uma trilha (vídeo empilha por cima; áudio mixa). */

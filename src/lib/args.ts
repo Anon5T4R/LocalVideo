@@ -1000,7 +1000,12 @@ export function filterComplexArgs(
       if (fo > 0) af.push(`afade=t=out:st=${secs(c.durationMs - fo)}:d=${secs(fo)}`);
       // Atraso pro lugar na timeline (ms inteiros; `all=1` atrasa os dois canais).
       af.push(`adelay=${Math.round(c.startMs)}|${Math.round(c.startMs)}`);
-      parts.push(`[${idx}:a]${af.join(",")}[a${ai}]`);
+      // `a:${N}` e NÃO `a`: num arquivo com duas faixas de áudio (mic + sistema),
+      // `[idx:a]` casa com AS DUAS e o ffmpeg pega só a primeira, calado — era o
+      // bug que fazia o take de faixas separadas do LocalRecord virar uma faixa
+      // só. Com o índice explícito, cada clipe leva exatamente a faixa que é dele.
+      const asIdx = c.audioStreamIndex ?? 0;
+      parts.push(`[${idx}:a:${asIdx}]${af.join(",")}[a${ai}]`);
       aLabels.push(`[a${ai}]`);
       ai++;
     });
