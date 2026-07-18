@@ -684,6 +684,108 @@ describe("presets de export (P5)", () => {
   });
 });
 
+/* ================================================================== */
+/* v0.4.1 — transições além do crossfade (wipe/slide)                  */
+/* ================================================================== */
+
+describe("transições wipe/slide no compilador (v0.4.1)", () => {
+  // a=[0,3000), b entra em 2000 → 1 s de sobreposição. O TIPO mora no clipe
+  // de trás (a).
+  const withKind = (kind?: "dissolve" | "wipe" | "slide", bOver: Partial<Clip> = {}) =>
+    tl([
+      vtrack([
+        { ...mediaClip("a", 0, 3000, 0, A), ...(kind ? { transitionKind: kind } : {}) },
+        { ...mediaClip("b", 2000, 3000, 0, B), ...bOver },
+      ]),
+    ]);
+
+  it("sem tipo (padrão) → dissolve: o fade no alfa de sempre, nada de wipe", () => {
+    const g = fc(filterComplexArgs(withKind(undefined), { [A]: src(), [B]: src() }, "o.mp4"));
+    expect(g).toContain("fade=t=in:st=0:d=1.000:alpha=1");
+    expect(g).not.toContain("gte(W*T");
+    expect(g).not.toContain("min(0,-W");
+  });
+
+  it("dissolve explícito = o mesmo grafo do padrão (a chave é açúcar)", () => {
+    const a = filterComplexArgs(withKind("dissolve"), { [A]: src(), [B]: src() }, "o.mp4");
+    const b = filterComplexArgs(withKind(undefined), { [A]: src(), [B]: src() }, "o.mp4");
+    expect(fc(a)).toBe(fc(b));
+  });
+
+  it("wipe → cortina por geq no alfa (fronteira em W·T/d), SEM fade", () => {
+    const g = fc(filterComplexArgs(withKind("wipe"), { [A]: src(), [B]: src() }, "o.mp4"));
+    expect(g).toContain("format=yuva420p");
+    // A máscara espacial: multiplica o alfa existente e revela até X = W·T/d.
+    expect(g).toContain("a='alpha(X\\,Y)*if(lt(T\\,1.000)\\,gte(W*T/1.000\\,X)\\,1)'");
+    // Sem o fade de alfa do dissolve (o afade do ÁUDIO continua — o crossfade
+    // sonoro vale pra qualquer tipo de transição).
+    expect(g).not.toContain(":alpha=1");
+  });
+
+  it("slide → o x do overlay ANDA (−W→0) durante a sobreposição, sem alfa", () => {
+    const g = fc(filterComplexArgs(withKind("slide"), { [A]: src(), [B]: src() }, "o.mp4"));
+    // b começa em 2 s; a sobreposição dura 1 s.
+    expect(g).toContain("overlay=x='min(0,-W+(t-2.000)*W/1.000)':y=0");
+    // Entra opaco: nem fade de alfa nem conversão pra yuva à toa no clipe que
+    // desliza (o afade do áudio continua — crossfade sonoro vale pra todos).
+    expect(g).not.toContain(":alpha=1");
+    expect(g).not.toContain("yuva420p");
+  });
+
+  it("o tipo só muda o clipe DA transição — o resto do grafo fica quieto", () => {
+    // O clipe A (que não entra por transição nenhuma) permanece sem alfa.
+    const g = fc(filterComplexArgs(withKind("wipe"), { [A]: src(), [B]: src() }, "o.mp4"));
+    const partA = g.split(";").find((p) => p.startsWith("[0:v]"))!;
+    expect(partA).not.toContain("yuva420p");
+    expect(partA).not.toContain("geq");
+  });
+
+  it("sem sobreposição o campo é INERTE (não inventa transição)", () => {
+    const t = tl([
+      vtrack([
+        { ...mediaClip("a", 0, 2000, 0, A), transitionKind: "wipe" },
+        mediaClip("b", 2000, 2000, 0, B),
+      ]),
+    ]);
+    const g = fc(filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4"));
+    expect(g).not.toContain("gte(W*T");
+    expect(g).not.toContain("fade=t=in");
+  });
+
+  it("PiP entrando cai no dissolve (cortina de caixinha não tem leitura)", () => {
+    const g = fc(
+      filterComplexArgs(
+        withKind("wipe", { transform: { x: 0.5, y: 0.5, scale: 0.3 } }),
+        { [A]: src(), [B]: src() },
+        "o.mp4",
+      ),
+    );
+    expect(g).not.toContain("gte(W*T");
+    expect(g).toContain("fade=t=in:st=0:d=1.000:alpha=1");
+  });
+
+  it("wipe convive com opacidade constante (multiplica, não sobrescreve)", () => {
+    const g = fc(
+      filterComplexArgs(withKind("wipe", { opacity: 0.5 }), { [A]: src(), [B]: src() }, "o.mp4"),
+    );
+    // O colorchannelmixer aplica a constante; o geq multiplica alpha(X,Y).
+    expect(g).toContain("colorchannelmixer=aa=0.5");
+    expect(g).toContain("a='alpha(X\\,Y)*");
+  });
+
+  it("transitionKind sozinho (em fila, sem sobrepor) NÃO tira do -c copy", () => {
+    const t = tl([
+      vtrack([
+        { ...mediaClip("a", 0, 2000, 0, A), transitionKind: "wipe" },
+        mediaClip("b", 2000, 1000, 3000, A),
+      ]),
+      atrack([]),
+    ]);
+    // Em fila e sem nada da v0.2/v0.3: continua degenerada (instantânea).
+    expect(degenerateClips(t)).not.toBeNull();
+  });
+});
+
 describe("degenerateClips rejeita os recursos da v0.3", () => {
   it("crop/transform/cor/velocidade/keyframes tiram do -c copy", () => {
     const mk = (over: Partial<Clip>) => tl([vtrack([{ ...mediaClip("a", 0, 1000, 0, A), ...over }])]);

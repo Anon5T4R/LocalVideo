@@ -86,6 +86,33 @@ describe(".tvproj v2", () => {
     expect(back.timeline).toEqual(v3);
   });
 
+  it("guarda e reabre o tipo da transição (v0.4.1) — e joga fora valor inventado", () => {
+    const withTrans: Timeline = {
+      version: 2,
+      tracks: [
+        {
+          id: "v1",
+          kind: "video",
+          clips: [
+            { id: "a", startMs: 0, durationMs: 3000, path: "C:\\v1.mp4", srcIn: 0, transitionKind: "wipe" },
+            { id: "b", startMs: 2000, durationMs: 3000, path: "C:\\v2.mp4", srcIn: 0, transitionKind: "slide" },
+          ],
+        },
+        { id: "a1", kind: "audio", clips: [] },
+      ],
+    };
+    const media = { "C:\\v1.mp4": info("C:\\v1.mp4"), "C:\\v2.mp4": info("C:\\v2.mp4") };
+    const back = parseProject(serializeProject(withTrans, media));
+    expect(back.timeline).toEqual(withTrans);
+
+    // Valor desconhecido (arquivo editado à mão) NÃO entra: vira o dissolve
+    // padrão em vez de derrubar o projeto ou vazar lixo pro compilador.
+    const doc =
+      '{"app":"LocalVideo","version":2,"media":{},"tracks":[{"id":"v1","kind":"video","clips":[' +
+      '{"id":"a","startMs":0,"durationMs":1000,"path":"v.mp4","srcIn":0,"transitionKind":"explode"}]}]}';
+    expect(parseProject(doc).timeline.tracks[0].clips[0].transitionKind).toBeUndefined();
+  });
+
   it("ignora filtros malformados no disco (não abre pela metade com lixo)", () => {
     const doc =
       '{"app":"LocalVideo","version":2,"media":{},"tracks":[{"id":"v1","kind":"video","clips":[' +

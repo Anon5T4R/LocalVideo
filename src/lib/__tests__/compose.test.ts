@@ -88,6 +88,62 @@ describe("layersAt — as camadas no instante t (ordem = a do export)", () => {
   });
 });
 
+describe("wipe/slide na prévia (v0.4.1) — a MESMA fronteira do export", () => {
+  // a=[0,3000) com transitionKind; b entra em 2000 → 1 s de sobreposição.
+  const withKind = (kind?: "wipe" | "slide" | "dissolve", bOver: Partial<Clip> = {}) =>
+    tl([
+      vtrack([
+        media("a", 0, 3000, kind ? { transitionKind: kind } : {}),
+        media("b", 2000, 3000, bOver),
+      ]),
+    ]);
+
+  it("wipe: a camada entra OPACA com o progresso em transition (não no alfa)", () => {
+    const ls = layersAt(withKind("wipe"), 2500); // meio da sobreposição
+    const b = ls[1] as MediaLayer;
+    // O alfa fica cheio — quem recorta é o desenho, na fronteira W·progress.
+    expect(b.alpha).toBe(1);
+    expect(b.transition).toEqual({ kind: "wipe", progress: 0.5 });
+  });
+
+  it("slide idem, com o kind certo", () => {
+    const b = layersAt(withKind("slide"), 2250)[1] as MediaLayer;
+    expect(b.alpha).toBe(1);
+    expect(b.transition?.kind).toBe("slide");
+    expect(b.transition?.progress).toBeCloseTo(0.25);
+  });
+
+  it("dissolve (padrão) segue no alfa, sem transition espacial", () => {
+    const b = layersAt(withKind(undefined), 2500)[1] as MediaLayer;
+    expect(b.alpha).toBeCloseTo(0.5);
+    expect(b.transition).toBeUndefined();
+  });
+
+  it("fora da janela da sobreposição, transition some (terminou = opaco)", () => {
+    // Em 3500 o clipe a já acabou: só b está ativo (é a única camada).
+    const ls = layersAt(withKind("wipe"), 3500);
+    expect(ls).toHaveLength(1);
+    const b = ls[0] as MediaLayer;
+    expect(b.alpha).toBe(1);
+    expect(b.transition).toBeUndefined();
+  });
+
+  it("PiP entrando cai no dissolve — espelha o compilador", () => {
+    const b = layersAt(
+      withKind("wipe", { transform: { x: 0.5, y: 0.5, scale: 0.3 } }),
+      2500,
+    )[1] as MediaLayer;
+    expect(b.transition).toBeUndefined();
+    expect(b.alpha).toBeCloseTo(0.5); // dissolve de sempre
+  });
+
+  it("wipe respeita a opacidade constante do clipe (multiplica)", () => {
+    const b = layersAt(withKind("wipe", { opacity: 0.5 }), 2500)[1] as MediaLayer;
+    expect(b.alpha).toBeCloseTo(0.5);
+    expect(b.transition?.kind).toBe("wipe");
+  });
+});
+
 describe("needsComposite — quando vale compor no canvas", () => {
   it("uma trilha simples NÃO precisa compor (mostra o <video>)", () => {
     const t = tl([vtrack([media("a", 0, 2000)])]);

@@ -515,7 +515,15 @@ export function encodeArgs(
  * com o crossfade do vídeo.
  */
 
-import { clipSpeed, type Clip, type ColorAdjust, type CropRect, type Keyframe, type Timeline } from "./timeline";
+import {
+  clipSpeed,
+  type Clip,
+  type ColorAdjust,
+  type CropRect,
+  type Keyframe,
+  type Timeline,
+  type TransitionKind,
+} from "./timeline";
 
 /** O que o compilador precisa saber de cada arquivo-fonte. Reusa o `SourceInfo`
  *  de cima — width/height/fps/hasAudio bastam pra normalizar e decidir o áudio. */
@@ -670,6 +678,27 @@ export function envelopeExpr(pts: Keyframe[], durSec: number, tvar: string): str
 function alphaEnvelopeGeq(env: Keyframe[], durSec: number): string {
   const e = envelopeExpr(env, durSec, "T");
   return `geq=lum='lum(X\\,Y)':cb='cb(X\\,Y)':cr='cr(X\\,Y)':a='255*clip(${e}\\,0\\,1)'`;
+}
+
+/**
+ * O `geq` da transição WIPE (v0.4.1): uma cortina revela o clipe que entra, da
+ * esquerda pra direita, ao longo de `durSec` segundos.
+ *
+ * A mesma técnica do envelope de opacidade — pintar o canal alfa e deixar a cor
+ * intacta — só que a máscara é ESPACIAL: no instante T (tempo local do clipe,
+ * antes do deslocamento pro startMs), a fronteira está em `X = W·T/d`. O pixel é
+ * visível se está à esquerda dela (`gte(W*T/d, X)` → 1) e invisível à direita
+ * (→ 0). Depois de `d`, tudo visível. Multiplica `alpha(X,Y)` (não SETA) pra
+ * respeitar uma opacidade constante aplicada antes (colorchannelmixer).
+ * Não precisa de `xfade`: a sobreposição continua sendo a transição — só o
+ * jeito de entrar muda.
+ */
+function wipeAlphaGeq(durSec: number): string {
+  const d = Math.max(0.001, durSec).toFixed(3);
+  return (
+    `geq=lum='lum(X\\,Y)':cb='cb(X\\,Y)':cr='cr(X\\,Y)':` +
+    `a='alpha(X\\,Y)*if(lt(T\\,${d})\\,gte(W*T/${d}\\,X)\\,1)'`
+  );
 }
 
 /**
@@ -862,28 +891,47 @@ export function filterComplexArgs(
           vf.push(`fps=${fps}`);
 
           // 5) Alfa: envelope de opacidade (geq) OU opacidade constante, e por
-          //    cima o crossfade (fade no alfa) da sobreposição com o vizinho de
-          //    mídia anterior. O geq SETA o alfa, então vem ANTES do fade (que o
-          //    multiplica durante a transição). Título não faz crossfade.
+          //    cima a TRANSIÇÃO da sobreposição com o vizinho de mídia anterior.
+          //    O tipo mora no clipe DE TRÁS (`transitionKind`): dissolve = fade
+          //    no alfa (o de sempre); wipe = cortina por geq; slide = o x do
+          //    overlay anda (abaixo). Num PiP a transição cai no dissolve —
+          //    cortina/deslize de uma caixinha posicionada não têm leitura
+          //    visual e o dissolve é o comportamento que sempre existiu.
+          //    O geq de envelope SETA o alfa, então vem ANTES do fade/wipe (que
+          //    multiplicam durante a transição). Título não faz crossfade.
           const prevClip = ci > 0 ? track.clips[ci - 1] : undefined;
           const prev = prevClip && prevClip.path !== undefined ? overlapMs(prevClip, c) : 0;
+          const kind: TransitionKind =
+            prev > 0 && !pip ? (prevClip?.transitionKind ?? "dissolve") : "dissolve";
+          const slide = prev > 0 && !pip && kind === "slide";
           const op = c.opacity ?? 1;
           const env = c.opacityKeyframes;
           const hasEnv = !!env && env.length > 0;
-          if (prev > 0 || op < 1 || hasEnv) {
+          // Slide entra OPACO (o movimento é do overlay) — sem alfa não precisa
+          // converter pra yuva420p à toa.
+          if ((prev > 0 && !slide) || op < 1 || hasEnv) {
             vf.push("format=yuva420p");
             if (hasEnv) vf.push(alphaEnvelopeGeq(env!, c.durationMs / 1000));
             else if (op < 1) vf.push(`colorchannelmixer=aa=${op}`);
-            if (prev > 0) vf.push(`fade=t=in:st=0:d=${secs(prev)}:alpha=1`);
+            if (prev > 0 && !slide) {
+              if (kind === "wipe") vf.push(wipeAlphaGeq(prev / 1000));
+              else vf.push(`fade=t=in:st=0:d=${secs(prev)}:alpha=1`);
+            }
           }
           // Desloca pro lugar na timeline.
           vf.push(`setpts=PTS+${s}/TB`);
 
           const ox = pip ? Math.round(pip.x * w) : 0;
           const oy = pip ? Math.round(pip.y * h) : 0;
+          // Slide: o x do overlay ANDA durante a sobreposição — o clipe entra da
+          // esquerda (−W → 0) e crava em 0 dali em diante (o min segura). O `t`
+          // aqui é o tempo da TIMELINE (o fluxo já foi deslocado pro startMs); o
+          // overlay reavalia x a cada frame por padrão. Aspas simples protegem
+          // as vírgulas do parser de opções, como no enable.
+          const oxExpr = slide ? `'min(0,-W+(t-${s})*W/${secs(prev)})'` : String(ox);
           parts.push(`[${idx}:v]${vf.join(",")}[v${k}]`);
           parts.push(
-            `${acc}[v${k}]overlay=x=${ox}:y=${oy}:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
+            `${acc}[v${k}]overlay=x=${oxExpr}:y=${oy}:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
           );
           acc = `[vacc${k}]`;
           k++;

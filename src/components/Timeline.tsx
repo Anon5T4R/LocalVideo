@@ -8,6 +8,7 @@ import {
   clipEnd,
   isMedia,
   isTitle,
+  locate,
   overlapWithNext,
   timelineDuration,
   type Clip,
@@ -161,6 +162,23 @@ export default function Timeline() {
     seek(pxToMs(x));
   };
 
+  // O fantasma do ripple na borda IN (v0.4.1). No ripple, aparar pela esquerda
+  // NÃO move a borda: o start fica colado, a alça apara a CABEÇA e a fila puxa —
+  // correto, mas menos óbvio que a borda OUT (nada parece "andar" com o mouse).
+  // Este fantasma dá corpo ao gesto: uma hachura do TAMANHO do trecho que já
+  // saiu, encostada na borda fixa, com o delta em cima. A semântica não muda —
+  // é só o gesto ganhando um rastro visível. Derivado no render (não em estado
+  // próprio) porque cada movimento do arrasto já re-renderiza via store.
+  const rippleGhost = (() => {
+    const d = dragRef.current;
+    if (!dragging || !d || d.kind !== "in" || !rippleMode) return null;
+    const loc = locate(timeline, d.id);
+    if (!loc) return null;
+    const trimmedMs = d.end0 - d.start0 - clipDuration(loc.clip);
+    if (trimmedMs <= 0) return null; // devolvendo cabeça: o conteúdo voltando já é o feedback
+    return { trackId: loc.track.id, startMs: loc.clip.startMs, trimmedMs };
+  })();
+
   const step = TICK_STEPS.find((s) => msToPx(s) >= MIN_TICK_PX) ?? TICK_STEPS[TICK_STEPS.length - 1];
   const ticks: number[] = [];
   for (let ms = 0; ms <= total; ms += step) ticks.push(ms);
@@ -270,6 +288,18 @@ export default function Timeline() {
                   }
                 />
               ))}
+              {/* o trecho que SAIU pela cabeça durante o ripple na borda IN */}
+              {rippleGhost && rippleGhost.trackId === track.id ? (
+                <div
+                  className="tl-ripple-ghost"
+                  style={{
+                    left: msToPx(rippleGhost.startMs) - msToPx(rippleGhost.trimmedMs),
+                    width: msToPx(rippleGhost.trimmedMs),
+                  }}
+                >
+                  <em>−{formatDuration(rippleGhost.trimmedMs)}</em>
+                </div>
+              ) : null}
             </div>
           ))}
 

@@ -79,6 +79,19 @@ export interface Keyframe {
 }
 
 /**
+ * O TIPO da transição com o próximo clipe (v0.4.1). A GEOMETRIA da transição
+ * continua sendo a sobreposição (`startMs`/`durationMs` — ver o cabeçalho); o
+ * tipo só diz COMO o clipe de cima entra durante ela:
+ * - `dissolve` (o padrão de sempre): fade no canal alfa — o dissolve da v0.2.
+ * - `wipe`: uma cortina revela o clipe novo da esquerda pra direita.
+ * - `slide`: o clipe novo desliza inteiro da esquerda por cima do antigo.
+ * Mora no clipe DE TRÁS ("a transição com o próximo") porque é nele que vive a
+ * alça de transição da régua — o campo e o gesto apontam pro mesmo lugar.
+ * Sem sobreposição, o campo é inerte (não muda nada no export nem na prévia).
+ */
+export type TransitionKind = "dissolve" | "wipe" | "slide";
+
+/**
  * Um clipe. Pode ser MÍDIA (janela sobre um arquivo) ou TÍTULO (texto). O que
  * distingue é a presença de `path` (mídia) ou `title` (texto) — nunca os dois.
  *
@@ -134,6 +147,10 @@ export interface Clip {
   opacityKeyframes?: Keyframe[];
   /** Envelope de volume ao longo do clipe. Ausente = usa `volume` constante. */
   volumeKeyframes?: Keyframe[];
+
+  /* --- transição (v0.4.1) --- */
+  /** COMO o próximo clipe entra na sobreposição com este. Ausente = dissolve. */
+  transitionKind?: TransitionKind;
 }
 
 /** Uma trilha: clipes ORDENADOS por `startMs`. Vídeo empilha (overlay/z-order);

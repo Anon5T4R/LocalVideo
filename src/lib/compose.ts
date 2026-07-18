@@ -28,7 +28,18 @@ import {
   type Keyframe,
   type Timeline,
   type Track,
+  type TransitionKind,
 } from "./timeline";
+
+/** A transição em CURSO numa camada (v0.4.1): wipe/slide no meio da entrada.
+ *  `progress` é 0..1 dentro da sobreposição — a MESMA fração que o compilador
+ *  manda pro ffmpeg (fronteira da cortina em `W·p`; x do slide em `−W·(1−p)`),
+ *  pra prévia e export mostrarem a mesma fronteira. Dissolve não vem por aqui:
+ *  ele continua sendo só o `alpha`. */
+export interface TransitionState {
+  kind: TransitionKind;
+  progress: number;
+}
 
 /** Uma camada de mídia a desenhar (um clipe de vídeo tocando em `t`). */
 export interface MediaLayer {
@@ -40,6 +51,9 @@ export interface MediaLayer {
   alpha: number;
   /** A cor (eq) não é reproduzível fielmente no canvas → prévia aproximada. */
   approx: boolean;
+  /** Wipe/slide em curso (o desenho recorta/desloca). Ausente = sem transição
+   *  espacial neste instante (dissolve já está dentro do `alpha`). */
+  transition?: TransitionState;
 }
 
 /** Uma camada de título (texto desenhado por cima). */
@@ -127,8 +141,24 @@ export function layersAt(tl: Timeline, t: number): Layer[] {
       if (t < c.startMs || t >= clipEnd(c)) return;
       if (c.path !== undefined) {
         const srcTimeMs = (c.srcIn ?? 0) + (t - c.startMs) * clipSpeed(c);
-        const alpha = Math.max(0, Math.min(1, opacityOf(c, t) * crossfadeAlpha(track, i, t)));
-        out.push({ kind: "media", clip: c, srcTimeMs, alpha, approx: !!c.color });
+        // A fração da transição de entrada (1 = fora/terminou). O TIPO mora no
+        // clipe DE TRÁS. Wipe/slide são ESPACIAIS: a camada entra opaca e o
+        // desenho recorta/desloca — então o progresso vai em `transition`, não
+        // no alpha. PiP cai no dissolve, espelhando o compilador.
+        const xf = crossfadeAlpha(track, i, t);
+        const prev = i > 0 ? track.clips[i - 1] : undefined;
+        const kind: TransitionKind =
+          prev?.path !== undefined && !c.transform ? (prev.transitionKind ?? "dissolve") : "dissolve";
+        const spatial = kind !== "dissolve" && xf < 1;
+        const alpha = Math.max(0, Math.min(1, opacityOf(c, t) * (spatial ? 1 : xf)));
+        out.push({
+          kind: "media",
+          clip: c,
+          srcTimeMs,
+          alpha,
+          approx: !!c.color,
+          ...(spatial ? { transition: { kind, progress: xf } } : {}),
+        });
       } else if (c.title) {
         out.push({ kind: "title", clip: c, alpha: opacityOf(c, t) });
       }

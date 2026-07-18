@@ -507,6 +507,31 @@ kbd {
   bottom: -8px;
   cursor: nwse-resize;
 }
+/* A dica do PiP "sumido": clipe PiP selecionado com o playhead fora dele. As
+   alças somem por design (sem frame não há o que posicionar); este chip explica
+   e o botão leva o playhead até o clipe. Discreto: rodapé do palco, sem modal. */
+.pip-away {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 20px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #eee;
+  font-size: 12px;
+  text-align: center;
+}
+.pip-away button {
+  white-space: nowrap;
+}
+
 /* A guia de centro: uma linha fina que só aparece quando o snap agarra o meio. */
 .pip-guide {
   position: absolute;
@@ -852,6 +877,41 @@ kbd {
 .tl-handle.out {
   right: 0;
 }
+/* O fantasma do ripple na borda IN: hachura do trecho que saiu pela cabeça,
+   encostada na borda fixa do clipe, com o delta por cima. Só existe durante o
+   arrasto — é rastro do gesto, não estado da timeline. */
+.tl-ripple-ghost {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  z-index: 2;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 1px dashed var(--danger);
+  border-radius: 6px 0 0 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--danger) 28%, transparent),
+    color-mix(in srgb, var(--danger) 28%, transparent) 5px,
+    transparent 5px,
+    transparent 10px
+  );
+  overflow: visible;
+}
+.tl-ripple-ghost em {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  font-style: normal;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: #fff;
+  background: color-mix(in srgb, var(--danger) 75%, #000);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 /* O playhead atravessa a régua e os clipes: é a linha do "agora". */
 .tl-playhead {
   position: absolute;
@@ -1057,6 +1117,36 @@ kbd {
 }
 .inspector .kf-row input[type="number"] {
   width: 56px;
+}
+/* O mini-gráfico do envelope (v0.4.1): a curva que a lista numérica descreve.
+   `preserveAspectRatio=none` estica o viewBox 100×40 — o traço usa
+   non-scaling-stroke pra não engordar junto. */
+.inspector .kf-graph {
+  width: 100%;
+  height: 64px;
+  display: block;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.inspector .kf-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.inspector .kf-pt {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.inspector .kf-hit {
+  fill: transparent;
+  cursor: grab;
 }
 
 /* ---------- modal / toasts ---------- */

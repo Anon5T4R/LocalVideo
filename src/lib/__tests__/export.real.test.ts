@@ -702,6 +702,112 @@ describe.skipIf(!ENABLED)("v0.3 filtros/PiP/velocidade/keyframes/presets (ffmpeg
     console.log(`\n  [prova] keyframe opacidade: luma início ${early} → fim ${late}\n`);
   });
 
+  it("GATE wipe (v0.4.1): no MEIO da transição, metade esquerda é o clipe novo e a direita o velho — fronteira no lugar certo", () => {
+    // Base PRETA [0,4s) com transitionKind wipe; clipe BRANCO entra em 2s
+    // (sobreposição 2s → transição em [2,4)). No meio (t=3s, progresso 0,5) a
+    // cortina está em W/2: esquerda BRANCA (revelada), direita PRETA (ainda o
+    // clipe velho). É a prova de frame que o item 4 exigiu — não a string do
+    // filtro, o PIXEL no lugar.
+    const black = join(V3DIR, "wipe-black.mp4");
+    const white = join(V3DIR, "wipe-white.mp4");
+    ffmpeg([
+      "-f", "lavfi", "-i", "color=c=black:s=640x480:r=30:d=4",
+      "-c:v", "libx264", "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", black,
+    ]);
+    ffmpeg([
+      "-f", "lavfi", "-i", "color=c=white:s=640x480:r=30:d=4",
+      "-c:v", "libx264", "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", white,
+    ]);
+    const tl = timeline([
+      vtrack([
+        { id: "a", startMs: 0, durationMs: 4000, path: black, srcIn: 0, transitionKind: "wipe" },
+        { id: "b", startMs: 2000, durationMs: 4000, path: white, srcIn: 0 },
+      ]),
+    ]);
+    const out = join(V3DIR, "wipe.mp4");
+    const silent = { hasAudio: false, audioCodec: null } as const;
+    ffmpeg(
+      filterComplexArgs(tl, { [black]: sourceOf(black, silent), [white]: sourceOf(white, silent) }, out),
+    );
+
+    // Duração: 4+4 − 2 de sobreposição = 6 s (a geometria continua mandando).
+    expect(durationOf(out)).toBeGreaterThan(5900);
+    expect(durationOf(out)).toBeLessThan(6200);
+
+    // t=3s (progresso 0,5): fronteira em x=0,5.
+    const leftMid = avgLumaRegion(out, 3, 0.05, 0.35, 0.3, 0.3); // já revelado → branco
+    const rightMid = avgLumaRegion(out, 3, 0.65, 0.35, 0.3, 0.3); // ainda o velho → preto
+    expect(leftMid).toBeGreaterThan(200);
+    expect(rightMid).toBeLessThan(30);
+    // t=2,2s (progresso 0,1): quase nada revelado — a direita AINDA é preta.
+    const earlyRight = avgLumaRegion(out, 2.2, 0.3, 0.35, 0.6, 0.3);
+    expect(earlyRight).toBeLessThan(30);
+    // t=4,5s (transição acabou): tudo branco.
+    const after = avgLumaRegion(out, 4.5, 0.1, 0.1, 0.8, 0.8);
+    expect(after).toBeGreaterThan(200);
+
+    extractFrame(out, 3, join(V3DIR, "wipe-mid.png"));
+    extractFrame(out, 2.2, join(V3DIR, "wipe-early.png"));
+    console.log(
+      `\n  [prova] wipe t=3s: esquerda ${leftMid} (branca) · direita ${rightMid} (preta); ` +
+        `t=2,2s direita ${earlyRight}; t=4,5s ${after}\n`,
+    );
+  });
+
+  it("GATE slide (v0.4.1): no MEIO da transição o painel cobre a esquerda; e o conteúdo DESLIZA (mostra a metade direita do frame novo)", () => {
+    // Base PRETA com transitionKind slide; testsrc2 entra deslizando da
+    // esquerda em [2,4). No meio (t=3s) o painel está em x=−W/2: a METADE
+    // DIREITA do frame novo aparece na metade esquerda da tela. O que
+    // distingue slide de wipe: no wipe apareceria a metade ESQUERDA do frame.
+    // testsrc2 tem conteúdo distinto nos dois lados, então dá pra provar:
+    // compara a região da tela com o mesmo pedaço do arquivo-fonte.
+    const black = join(V3DIR, "slide-black.mp4");
+    ffmpeg([
+      "-f", "lavfi", "-i", "color=c=black:s=640x480:r=30:d=4",
+      "-c:v", "libx264", "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", black,
+    ]);
+    const tl = timeline([
+      vtrack([
+        { id: "a", startMs: 0, durationMs: 4000, path: black, srcIn: 0, transitionKind: "slide" },
+        { id: "b", startMs: 2000, durationMs: 4000, path: B, srcIn: 0 },
+      ]),
+    ]);
+    const out = join(V3DIR, "slide.mp4");
+    ffmpeg(
+      filterComplexArgs(
+        tl,
+        { [black]: sourceOf(black, { hasAudio: false, audioCodec: null }), [B]: sourceOf(B) },
+        out,
+      ),
+    );
+
+    expect(durationOf(out)).toBeGreaterThan(5900);
+    expect(durationOf(out)).toBeLessThan(6200);
+
+    // t=3s: a esquerda da tela tem IMAGEM (o painel), a direita segue preta.
+    const leftMid = avgLumaRegion(out, 3, 0.05, 0.35, 0.35, 0.3);
+    const rightMid = avgLumaRegion(out, 3, 0.65, 0.35, 0.3, 0.3);
+    expect(leftMid).toBeGreaterThan(20);
+    expect(rightMid).toBeLessThan(30);
+
+    // O DESLIZE de verdade: a faixa da tela em x∈[0, 0.25] no meio da transição
+    // é a faixa x∈[0.5, 0.75] do frame-fonte (deslocada W/2). Compara com o
+    // próprio arquivo B no MESMO instante-fonte (t=3s da timeline = 1s dentro
+    // de B). Wipe (sem deslocamento) mostraria a faixa [0, 0.25] do fonte.
+    const screenStrip = avgLumaRegion(out, 3, 0.02, 0.4, 0.2, 0.2);
+    const srcShifted = avgLumaRegion(B, 1, 0.52, 0.4, 0.2, 0.2); // o que o slide mostra
+    const srcSamePos = avgLumaRegion(B, 1, 0.02, 0.4, 0.2, 0.2); // o que o wipe mostraria
+    expect(Math.abs(screenStrip - srcShifted)).toBeLessThan(12);
+    // Só é prova se as duas faixas do fonte forem DIFERENTES entre si.
+    expect(Math.abs(srcShifted - srcSamePos)).toBeGreaterThan(20);
+
+    extractFrame(out, 3, join(V3DIR, "slide-mid.png"));
+    console.log(
+      `\n  [prova] slide t=3s: tela[0..0.25]=${screenStrip} · fonte[0.5..0.75]=${srcShifted} ` +
+        `(casam) · fonte[0..0.25]=${srcSamePos} (diferente ⇒ deslizou, não cortinou)\n`,
+    );
+  });
+
   it("GATE keyframe de volume: rampa de ganho (começo baixo, fim alto)", () => {
     const tl = timeline([
       atrack(

@@ -2,7 +2,13 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { audioLayersAt, hasMixAudio } from "../lib/audiomix";
-import { colorToCanvasFilter, layersAt, needsComposite, type MediaLayer } from "../lib/compose";
+import {
+  colorToCanvasFilter,
+  layersAt,
+  needsComposite,
+  type MediaLayer,
+  type TransitionState,
+} from "../lib/compose";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
 import { containRect, movePip, pipBox, resizePip, type Corner } from "../lib/pip";
@@ -187,7 +193,7 @@ export default function Preview() {
         if (l.kind === "media") {
           const frame = frames.get(l.clip.id) ?? null;
           if (frame) {
-            drawMedia(ctx, frame, l.clip, dims.w, dims.h, l.alpha);
+            drawMedia(ctx, frame, l.clip, dims.w, dims.h, l.alpha, l.transition);
             frame.close();
           }
         } else {
@@ -390,6 +396,19 @@ export default function Preview() {
     return c;
   })();
 
+  // A dica do PiP "sumido" (v0.4.1): clipe PiP selecionado mas playhead FORA da
+  // janela dele. As alças somem por DESIGN (sem frame embaixo não há o que
+  // posicionar — é o WYSIWYG sendo honesto), mas sumir calado deixava o usuário
+  // sem entender pra onde foi a caixa. Em vez de só explicar, o botão RESOLVE:
+  // leva o playhead pro clipe (e as alças voltam sozinhas).
+  const pipAway = (() => {
+    if (playing || !selectedId || pipClip) return null;
+    const loc = locate(timeline, selectedId);
+    const c = loc?.clip;
+    if (!c || !isMedia(c) || !c.transform) return null;
+    return c; // tem PiP, mas o playhead está fora de [startMs, clipEnd)
+  })();
+
   // Buraco num filme que EXISTE: nem clipe embaixo, nem mídia sumida. A tela
   // fica preta (o fundo do `.stage` já é #000) e o tempo corre por cima — não é
   // "importe um vídeo" (isso é `total === 0`), é o vazio entre cortes.
@@ -444,6 +463,13 @@ export default function Preview() {
             {/* Alças de PiP: arrastar/redimensionar a caixa direto na prévia. */}
             {pipClip ? (
               <PipHandles clip={pipClip} dims={dims} media={media} stageRef={stageRef} />
+            ) : null}
+            {/* PiP selecionado com o playhead fora: explica E oferece o pulo. */}
+            {pipAway ? (
+              <div className="pip-away">
+                <span>{t("pip.away")}</span>
+                <button onClick={() => seek(pipAway.startMs)}>{t("pip.goto")}</button>
+              </div>
             ) : null}
           </>
         ) : (
@@ -786,6 +812,7 @@ function drawMedia(
   W: number,
   H: number,
   alpha: number,
+  transition?: TransitionState,
 ): void {
   const fw = frame.displayWidth;
   const fh = frame.displayHeight;
@@ -817,7 +844,40 @@ function drawMedia(
     const scale = Math.min(W / sw, H / sh);
     const dw = sw * scale;
     const dh = sh * scale;
-    ctx.drawImage(frame, sx, sy, sw, sh, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    const dx = (W - dw) / 2;
+    const dy = (H - dh) / 2;
+
+    // Wipe/slide em curso (v0.4.1): a MESMA fronteira que o export desenha.
+    // No ffmpeg o quadro que entra já passou pelo scale+pad — as BARRAS fazem
+    // parte do painel (são preto opaco que cobre o de baixo). No canvas as
+    // barras não existem (só se desenha o conteúdo), então o retângulo preto
+    // entra aqui, sem o filter de cor (no export o eq roda ANTES do pad — a
+    // barra não é colorida). É o que mantém a prévia honesta com o arquivo.
+    if (transition?.kind === "slide") {
+      const p = Math.max(0, Math.min(1, transition.progress));
+      const off = -(1 - p) * W;
+      const f = ctx.filter;
+      ctx.filter = "none";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(off, 0, W, H);
+      ctx.filter = f;
+      ctx.drawImage(frame, sx, sy, sw, sh, dx + off, dy, dw, dh);
+    } else if (transition?.kind === "wipe") {
+      const p = Math.max(0, Math.min(1, transition.progress));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, W * p, H);
+      ctx.clip();
+      const f = ctx.filter;
+      ctx.filter = "none";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      ctx.filter = f;
+      ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+    }
   }
   ctx.globalAlpha = 1;
   ctx.filter = "none";

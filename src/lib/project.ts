@@ -191,6 +191,11 @@ function parseClip(raw: unknown): Clip {
   if (opKf) base.opacityKeyframes = opKf;
   const volKf = parseKeyframes(c.volumeKeyframes);
   if (volKf) base.volumeKeyframes = volKf;
+  // v0.4.1: tipo da transição com o próximo. Valor desconhecido NÃO entra (vira
+  // o dissolve padrão) — arquivo editado à mão não derruba o projeto.
+  if (c.transitionKind === "dissolve" || c.transitionKind === "wipe" || c.transitionKind === "slide") {
+    base.transitionKind = c.transitionKind;
+  }
   return base;
 }
 
