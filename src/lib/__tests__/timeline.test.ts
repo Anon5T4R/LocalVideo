@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  addSubtitles,
   detachAudio,
   __resetIds,
   addTitle,
@@ -468,5 +469,40 @@ describe("detachAudio — separar o áudio do vídeo", () => {
     const mudo = detachAudio(tl, id, 1);
     // segunda vez sobre o clipe já mudo: nada muda
     expect(detachAudio(mudo, id, 1)).toBe(mudo);
+  });
+});
+
+describe("addSubtitles — legenda vira clipe de titulo editavel", () => {
+  it("cada cue vira um clipe numa trilha nova por cima", () => {
+    __resetIds();
+    let tl = newTimeline();
+    tl = addSubtitles(tl, [
+      { startMs: 1000, durationMs: 2000, text: "um" },
+      { startMs: 4000, durationMs: 1000, text: "dois" },
+    ]);
+    const sub = tl.tracks[tl.tracks.length - 1];
+    expect(sub.kind).toBe("video");
+    expect(sub.clips).toHaveLength(2);
+    expect(sub.clips[0].title!.text).toBe("um");
+    expect(sub.clips[0].title!.anchor).toBe("bottom");
+    expect(sub.clips[0].startMs).toBe(1000);
+  });
+
+  it("cue que invadiria o proximo e aparado (senao vira crossfade)", () => {
+    __resetIds();
+    let tl = newTimeline();
+    // A primeira legenda diz durar 5s, mas a segunda comeca em 2s.
+    tl = addSubtitles(tl, [
+      { startMs: 0, durationMs: 5000, text: "longa" },
+      { startMs: 2000, durationMs: 1000, text: "curta" },
+    ]);
+    const sub = tl.tracks[tl.tracks.length - 1];
+    // Encurtada pra nao passar do inicio da seguinte.
+    expect(sub.clips[0].durationMs).toBe(2000);
+  });
+
+  it("lista vazia nao mexe na timeline", () => {
+    const tl = newTimeline();
+    expect(addSubtitles(tl, [])).toBe(tl);
   });
 });

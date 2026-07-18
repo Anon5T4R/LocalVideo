@@ -92,6 +92,10 @@ const pt = {
   "exp.revealFile": "Mostrar na pasta",
   "exp.openFailed": "Não consegui abrir. O arquivo pode ter sido movido.",
 
+  "sub.import": "Importar legendas…",
+  "sub.dlg": "Legendas (SRT/VTT)",
+  "sub.empty": "Nenhuma legenda válida no arquivo.",
+  "sub.imported": "{n} legendas importadas numa trilha nova.",
   "mk.import": "Importar marcadores…",
   "mk.dlgMarkers": "Marcadores (JSON)",
   "mk.corrupt": "Esse arquivo de marcadores não deu pra ler.",
@@ -369,6 +373,10 @@ const en: Record<MessageKey, string> = {
   "exp.revealFile": "Show in folder",
   "exp.openFailed": "Couldn't open it. The file may have been moved.",
 
+  "sub.import": "Import subtitles…",
+  "sub.dlg": "Subtitles (SRT/VTT)",
+  "sub.empty": "No valid subtitles in the file.",
+  "sub.imported": "{n} subtitles imported onto a new track.",
   "mk.import": "Import markers…",
   "mk.dlgMarkers": "Markers (JSON)",
   "mk.corrupt": "Couldn't read that markers file.",
@@ -644,6 +652,10 @@ const es: Record<MessageKey, string> = {
   "exp.revealFile": "Mostrar en la carpeta",
   "exp.openFailed": "No se pudo abrir. Puede que el archivo se haya movido.",
 
+  "sub.import": "Importar subtítulos…",
+  "sub.dlg": "Subtítulos (SRT/VTT)",
+  "sub.empty": "Ningún subtítulo válido en el archivo.",
+  "sub.imported": "{n} subtítulos importados en una pista nueva.",
   "mk.import": "Importar marcadores…",
   "mk.dlgMarkers": "Marcadores (JSON)",
   "mk.corrupt": "No se pudo leer ese archivo de marcadores.",

@@ -74,6 +74,20 @@ export default function App() {
 
   /** Marcadores → cortes. Ver o estado real da ponte com o LocalRecord no
    *  cabeçalho de `lib/markers.ts` (spoiler: o Record ainda não os exporta). */
+  const doImportSubtitles = useCallback(async () => {
+    const picked = await openDialog({
+      multiple: false,
+      filters: [{ name: t("sub.dlg"), extensions: ["srt", "vtt"] }],
+    });
+    if (typeof picked !== "string") return;
+    try {
+      const raw = await invoke<string>("project_open", { path: picked });
+      useEditor.getState().importSubtitles(raw);
+    } catch {
+      useUi.getState().pushToast("error", t("sub.empty"));
+    }
+  }, []);
+
   const doImportMarkers = useCallback(async () => {
     const picked = await openDialog({
       multiple: false,
@@ -356,6 +370,9 @@ export default function App() {
         </button>
         <button onClick={() => void doImportMarkers()} disabled={empty} title={t("mk.import")}>
           <Icon name="check" /> {t("mk.import")}
+        </button>
+        <button onClick={() => void doImportSubtitles()} disabled={empty} title={t("sub.import")}>
+          <Icon name="subtitle" /> {t("sub.import")}
         </button>
         <button
           className="primary"

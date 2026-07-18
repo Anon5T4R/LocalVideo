@@ -478,6 +478,46 @@ export function defaultTitle(text = "Título"): TitleProps {
   return { text, fontSizePx: 48, color: "#ffffff", anchor: "bottom" };
 }
 
+/** Props de um clipe de LEGENDA: um título ancorado embaixo, menor que um
+ *  título de abertura. Fonte própria porque legenda e título têm tamanhos
+ *  diferentes por natureza — daí ser uma função e não `defaultTitle`. */
+export function subtitleProps(text: string): TitleProps {
+  return { text, fontSizePx: 32, color: "#ffffff", anchor: "bottom" };
+}
+
+/** Insere legendas como clipes de título numa trilha de vídeo por cima.
+ *
+ *  Cada cue vira um clipe com seu tempo próprio — e como legenda É um clipe de
+ *  título aqui, o inspetor já sabe editá-la (texto, fonte, âncora) e o export já
+ *  sabe queimá-la (`drawtext`). O trabalho de importar é só POSICIONAR.
+ *
+ *  Vão todas numa trilha nova, no topo: assim ficam por cima do vídeo e o
+ *  usuário liga/desliga a camada inteira movendo/removendo a trilha, sem caçar
+ *  clipe por clipe. Cues que se sobreporiam no tempo (raro, mas legenda ruim
+ *  existe) são aparados pra não virar crossfade sem querer. */
+export function addSubtitles(
+  tl: Timeline,
+  cues: { startMs: number; durationMs: number; text: string }[],
+): Timeline {
+  if (cues.length === 0) return tl;
+  const ordered = [...cues].sort((a, b) => a.startMs - b.startMs);
+  const clips: Clip[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const cue = ordered[i];
+    const next = ordered[i + 1];
+    // Não deixa uma legenda invadir a próxima: se a duração do arquivo passar do
+    // início da seguinte, encurta. Na mesma trilha isso viraria sobreposição.
+    const cap = next ? next.startMs - cue.startMs : cue.durationMs;
+    clips.push({
+      id: newId("sub"),
+      startMs: Math.max(0, Math.round(cue.startMs)),
+      durationMs: Math.max(100, Math.round(Math.min(cue.durationMs, cap))),
+      title: subtitleProps(cue.text),
+    });
+  }
+  return { ...tl, tracks: [...tl.tracks, { id: newId("vt"), kind: "video", clips }] };
+}
+
 /* ------------------------------------------------------------------ */
 /* Edição (puro; devolve a MESMA referência quando é não-evento)       */
 /* ------------------------------------------------------------------ */

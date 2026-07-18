@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import { t } from "../lib/i18n";
 import { applyMarkers, MarkerParseError, parseMarkers } from "../lib/markers";
+import { parseSubtitles } from "../lib/subtitles";
 import { thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
 import { parseProject, ProjectParseError, serializeProject } from "../lib/project";
 import {
@@ -25,6 +26,7 @@ import {
   redo,
   removeClip,
   detachAudio,
+  addSubtitles,
   replacePresent,
   setClipEdge,
   setClipSpeed,
@@ -122,6 +124,8 @@ interface EditorState {
   setRippleMode: (v: boolean) => void;
 
   importMarkers: (json: string) => void;
+  /** Importa legendas SRT/VTT como clipes de título editáveis. */
+  importSubtitles: (raw: string) => void;
 
   newProject: () => void;
   openProject: (path: string) => Promise<void>;
@@ -418,6 +422,18 @@ export const useEditor = create<EditorState>((set, get) => ({
    * Ponte com o LocalRecord: marcadores viram cortes. (Estado real da ponte no
    * cabeçalho de `lib/markers.ts` — o Record ainda não os exporta.)
    */
+  importSubtitles: (raw) => {
+    const cues = parseSubtitles(raw);
+    if (cues.length === 0) {
+      useUi.getState().pushToast("error", t("sub.empty"));
+      return;
+    }
+    const { history } = get();
+    const next = addSubtitles(history.present, cues);
+    set({ history: pushHistory(history, next), dirty: true });
+    useUi.getState().pushToast("info", t("sub.imported", { n: String(cues.length) }));
+  },
+
   importMarkers: (json) => {
     let file: ReturnType<typeof parseMarkers>;
     try {
