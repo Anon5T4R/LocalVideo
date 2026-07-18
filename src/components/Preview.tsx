@@ -5,16 +5,19 @@ import { audioLayersAt, hasMixAudio } from "../lib/audiomix";
 import { colorToCanvasFilter, layersAt, needsComposite, type MediaLayer } from "../lib/compose";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
+import { containRect, movePip, pipBox, resizePip, type Corner } from "../lib/pip";
 import { formatDuration, formatTimecode, gapAdvance } from "../lib/probe";
 import {
   baseVideoTrack,
   clipEnd,
   endHit,
   isMedia,
+  locate,
   srcOut,
   timelineDuration,
   timeToClip,
   type Clip,
+  type Transform,
 } from "../lib/timeline";
 import { useEditor } from "../state/editor";
 
@@ -48,9 +51,11 @@ export default function Preview() {
   const rate = useEditor((s) => s.rate);
   const seek = useEditor((s) => s.seek);
   const setPlaying = useEditor((s) => s.setPlaying);
+  const selectedId = useEditor((s) => s.selectedId);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   /** Um decodificador por arquivo: abrir custa ler o arquivo, não se faz por seta. */
   const sources = useRef<Map<string, FrameSource>>(new Map());
   /** O canvas tem um quadro pintado e válido pro playhead de agora? */
@@ -373,6 +378,18 @@ export default function Preview() {
 
   const showVideo = baseHit && !gone && !doComposite;
 
+  // A alça de PiP DIRETA na prévia: aparece quando o clipe selecionado é mídia
+  // COM transform e está ativo no instante atual (senão a caixa não teria frame
+  // embaixo). Some no play — arrastar contra o ticker seria briga de relógio.
+  const pipClip = (() => {
+    if (playing || !selectedId) return null;
+    const loc = locate(timeline, selectedId);
+    const c = loc?.clip;
+    if (!c || !isMedia(c) || !c.transform) return null;
+    if (playhead < c.startMs || playhead >= clipEnd(c)) return null;
+    return c;
+  })();
+
   // Buraco num filme que EXISTE: nem clipe embaixo, nem mídia sumida. A tela
   // fica preta (o fundo do `.stage` já é #000) e o tempo corre por cima — não é
   // "importe um vídeo" (isso é `total === 0`), é o vazio entre cortes.
@@ -393,7 +410,7 @@ export default function Preview() {
         </span>
       </div>
 
-      <div className="stage">
+      <div className="stage" ref={stageRef}>
         {gone ? (
           <div className="stage-empty muted">{t("preview.gone")}</div>
         ) : total > 0 ? (
@@ -424,6 +441,10 @@ export default function Preview() {
             {/* Buraco: um preto por cima do <video> escondido. Sem texto — o tempo
                 correndo no cabeçalho já diz que está tocando pelo vazio. */}
             {inGap ? <div className="stage-empty" aria-label={t("preview.gap")} /> : null}
+            {/* Alças de PiP: arrastar/redimensionar a caixa direto na prévia. */}
+            {pipClip ? (
+              <PipHandles clip={pipClip} dims={dims} media={media} stageRef={stageRef} />
+            ) : null}
           </>
         ) : (
           <div className="stage-empty muted">{t("preview.empty")}</div>
@@ -462,6 +483,182 @@ export default function Preview() {
       </div>
     </div>
   );
+}
+
+/** Estado de um arrasto de PiP em curso (guarda o que não pode mudar no meio). */
+type PipDrag =
+  | { kind: "move"; x0: number; y0: number; base: Transform; cw: number; ch: number }
+  | {
+      kind: "resize";
+      corner: Corner;
+      base: Transform;
+      rectLeft: number;
+      rectTop: number;
+      cw: number;
+      ch: number;
+    };
+
+/** Tolerância do snap do PiP, em fração do quadro — o mesmo "quase encostou,
+ *  então encostou" da régua, só que aqui contra as bordas e o centro da tela. */
+const PIP_SNAP = 0.02;
+
+/**
+ * As ALÇAS do PiP direto na prévia (o item de maior valor da rodada de
+ * excelência): a caixa do overlay vira arrastável e redimensionável POR CIMA do
+ * WYSIWYG, e o resultado atualiza ao vivo (é o mesmo `transform` que o inspetor
+ * e o compilador leem — arrastar aqui é escrever o param que o export usa).
+ *
+ * A matemática (mover, redimensionar por canto com aspecto travado, snap, o
+ * retângulo do conteúdo no letterbox) mora em `lib/pip.ts`, pura e testada.
+ * Aqui só se converte pixel↔fração e se escuta o ponteiro — e, crucial, o
+ * arrasto inteiro é UM passo de undo (`beginEdit`/`endEdit` + o `doUpdateClip`
+ * que coalesce dentro da sessão).
+ */
+function PipHandles({
+  clip,
+  dims,
+  media,
+  stageRef,
+}: {
+  clip: Clip;
+  dims: { w: number; h: number };
+  media: Record<string, { width: number; height: number }>;
+  stageRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const doUpdateClip = useEditor((s) => s.doUpdateClip);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<PipDrag | null>(null);
+
+  // Mede o palco e segue o resize da janela — as alças têm que colar no
+  // retângulo do conteúdo, não numa medida velha de outro tamanho de janela.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const measure = () => setStageSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [stageRef]);
+
+  const outAspect = dims.w / dims.h;
+  // Aspecto do frame JÁ recortado (o mesmo do `drawMedia`). Sem info da mídia,
+  // cai no aspecto de saída — a caixa não distorce, só pode não bater o recorte.
+  const info = clip.path ? media[clip.path] : undefined;
+  const clipAspect = (() => {
+    if (!info) return outAspect;
+    const cw = clip.crop ? clip.crop.w * info.width : info.width;
+    const ch = clip.crop ? clip.crop.h * info.height : info.height;
+    return ch > 0 && cw > 0 ? cw / ch : outAspect;
+  })();
+
+  const content = containRect(stageSize.w, stageSize.h, dims.w, dims.h);
+  const tr = clip.transform!;
+  const box = pipBox(tr, clipAspect, outAspect);
+
+  // O arrasto: um par estável de listeners por sessão (padrão da régua). O
+  // `dragRef` sobrevive ao re-render; o efeito só liga/desliga os ouvintes.
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (d.kind === "move") {
+        const dx = (e.clientX - d.x0) / d.cw;
+        const dy = (e.clientY - d.y0) / d.ch;
+        const r = movePip(d.base, clipAspect, outAspect, dx, dy, PIP_SNAP);
+        doUpdateClip(clip.id, { transform: r.transform });
+      } else {
+        const px = clamp01((e.clientX - d.rectLeft) / d.cw);
+        const py = clamp01((e.clientY - d.rectTop) / d.ch);
+        doUpdateClip(clip.id, {
+          transform: resizePip(d.base, clipAspect, outAspect, d.corner, px, py),
+        });
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      setDragging(false);
+      useEditor.getState().endEdit();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragging]);
+
+  const startMove = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    useEditor.getState().beginEdit();
+    dragRef.current = {
+      kind: "move",
+      x0: e.clientX,
+      y0: e.clientY,
+      base: tr,
+      cw: content.width,
+      ch: content.height,
+    };
+    setDragging(true);
+  };
+  const startResize = (corner: Corner) => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = stageRef.current?.getBoundingClientRect();
+    useEditor.getState().beginEdit();
+    dragRef.current = {
+      kind: "resize",
+      corner,
+      base: tr,
+      rectLeft: (rect?.left ?? 0) + content.left,
+      rectTop: (rect?.top ?? 0) + content.top,
+      cw: content.width,
+      ch: content.height,
+    };
+    setDragging(true);
+  };
+
+  if (content.width <= 0) return null;
+  const corners: Corner[] = ["nw", "ne", "sw", "se"];
+  // Guia de centro: aparece durante o arrasto quando a caixa está centrada — o
+  // sinal visual de que o snap agarrou o meio da tela.
+  const centeredX = Math.abs(box.x + box.w / 2 - 0.5) < 0.003;
+  const centeredY = Math.abs(box.y + box.h / 2 - 0.5) < 0.003;
+
+  return (
+    <div className={`pip-overlay ${dragging ? "dragging" : ""}`}>
+      <div
+        className="pip-box"
+        style={{
+          left: content.left + box.x * content.width,
+          top: content.top + box.y * content.height,
+          width: box.w * content.width,
+          height: box.h * content.height,
+        }}
+        onPointerDown={startMove}
+        title={t("pip.dragHint")}
+      >
+        {corners.map((c) => (
+          <span key={c} className={`pip-h ${c}`} onPointerDown={startResize(c)} />
+        ))}
+      </div>
+      {dragging && centeredX ? (
+        <div className="pip-guide v" style={{ left: content.left + content.width / 2 }} />
+      ) : null}
+      {dragging && centeredY ? (
+        <div className="pip-guide h" style={{ top: content.top + content.height / 2 }} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Grampeia em 0..1 (guarda de NaN). */
+function clamp01(n: number): number {
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
 }
 
 /**

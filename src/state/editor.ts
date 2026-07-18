@@ -78,6 +78,8 @@ interface EditorState {
   editing: boolean;
   /** Esta sessão de arrasto já empilhou o estado de antes? */
   editPushed: boolean;
+  /** Modo ripple: aparar PUXA os vizinhos (não deixa buraco). */
+  rippleMode: boolean;
 
   timeline: () => Timeline;
   duration: () => number;
@@ -114,6 +116,7 @@ interface EditorState {
   setPlaying: (v: boolean) => void;
   nudgeRate: (dir: -1 | 1) => void;
   setZoom: (pxPerSec: number) => void;
+  setRippleMode: (v: boolean) => void;
 
   importMarkers: (json: string) => void;
 
@@ -190,6 +193,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   fontPath: null,
   editing: false,
   editPushed: false,
+  rippleMode: false,
 
   timeline: () => get().history.present,
   duration: () => timelineDuration(get().history.present),
@@ -257,12 +261,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   doTrimEdge: (id, edge, timelineMs) => {
-    const { history, media, editing, editPushed } = get();
+    const { history, media, editing, editPushed, rippleMode } = get();
     const loc = locate(history.present, id);
     if (!loc) return;
     // Limite = duração do ARQUIVO (mídia): aparar não inventa vídeo que não há.
     const limit = loc.clip.path ? media[loc.clip.path]?.durationMs : undefined;
-    const next = setClipEdge(history.present, id, edge, timelineMs, limit);
+    const next = setClipEdge(history.present, id, edge, timelineMs, limit, rippleMode);
     if (next === history.present) return;
     const first = !editing || !editPushed;
     set({
@@ -298,10 +302,20 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   doUpdateClip: (id, patch) => {
-    const { history } = get();
+    const { history, editing, editPushed } = get();
     const next = updateClip(history.present, id, patch);
     if (next === history.present) return;
-    set({ history: pushHistory(history, next), dirty: true });
+    // Fora de uma sessão de arrasto (`editing` falso), cada mexida do inspetor é
+    // seu próprio passo de undo — igual à v0.3. DENTRO de um arrasto (as alças de
+    // PiP na prévia chamam `beginEdit`), o arrasto inteiro coalesce em UM passo:
+    // empilha no 1º movimento e daí só troca o presente. É a MESMA regra do
+    // aparar/mover — sem ela, um arrasto de PiP viraria dezenas de Ctrl+Z.
+    const first = !editing || !editPushed;
+    set({
+      history: first ? pushHistory(history, next) : replacePresent(history, next),
+      dirty: true,
+      editPushed: true,
+    });
   },
 
   doSetSpeed: (id, speed) => {
@@ -382,6 +396,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setZoom: (pxPerSec) => set({ pxPerSec: Math.max(4, Math.min(400, pxPerSec)) }),
+  setRippleMode: (rippleMode) => set({ rippleMode }),
 
   /**
    * Ponte com o LocalRecord: marcadores viram cortes. (Estado real da ponte no

@@ -303,6 +303,7 @@ export default function ClipInspector() {
         </label>
         {tr ? (
           <>
+            <span className="muted small">{t("clip.pipCanvasHint")}</span>
             <Slider label={t("clip.pipSize")} min={0.1} max={1} value={tr.scale} onChange={(v) => set({ scale: v })} />
             <Slider label={t("clip.pipX")} min={0} max={1} value={tr.x} onChange={(v) => set({ x: v })} />
             <Slider label={t("clip.pipY")} min={0} max={1} value={tr.y} onChange={(v) => set({ y: v })} />

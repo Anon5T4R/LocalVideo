@@ -204,6 +204,63 @@ describe("setClipEdge (aparar)", () => {
   });
 });
 
+describe("setClipEdge — RIPPLE (aparar puxando os vizinhos)", () => {
+  // base: a=[0,1000), b=[1000,3000)srcIn5000, c=[3000,6000)
+  it("OUT encurtando: a fila sobe, sem buraco", () => {
+    // Encurta 'a' pra 500. Ripple: b→500, c→2500 (colados).
+    const t = setClipEdge(base(), "a", "out", 500, undefined, true);
+    const [ca, cb, cc] = t.tracks[0].clips;
+    expect(ca).toMatchObject({ startMs: 0, durationMs: 500 });
+    expect(cb.startMs).toBe(500);
+    expect(cc.startMs).toBe(2500);
+    // b não mudou de conteúdo (srcIn intacto) — só de posição.
+    expect(cb.srcIn).toBe(5000);
+  });
+
+  it("OUT esticando: a fila desce pelo mesmo tanto", () => {
+    const t = setClipEdge(base(), "a", "out", 1500, undefined, true);
+    const [ca, cb, cc] = t.tracks[0].clips;
+    expect(ca.durationMs).toBe(1500);
+    expect(cb.startMs).toBe(1500);
+    expect(cc.startMs).toBe(3500);
+  });
+
+  it("IN cortando cabeça: o START fica colado, a cauda sobe, srcOut preservado", () => {
+    const before = base().tracks[0].clips[1];
+    const oldSrcOut = srcOut(before); // 7000
+    const t = setClipEdge(base(), "b", "in", 1500, undefined, true);
+    const cb = t.tracks[0].clips[1];
+    const cc = t.tracks[0].clips[2];
+    expect(cb.startMs).toBe(1000); // NÃO abriu buraco antes
+    expect(cb.durationMs).toBe(1500); // 2000 - 500
+    expect(cb.srcIn).toBe(5500); // avançou 500 de cabeça
+    expect(srcOut(cb)).toBe(oldSrcOut); // o fim-fonte não mexeu
+    expect(cc.startMs).toBe(2500); // cauda subiu 500 e colou no novo fim de b
+  });
+
+  it("IN devolvendo cabeça: a cauda desce, srcIn recua", () => {
+    const t = setClipEdge(base(), "b", "in", 800, undefined, true);
+    const cb = t.tracks[0].clips[1];
+    const cc = t.tracks[0].clips[2];
+    expect(cb.startMs).toBe(1000);
+    expect(cb.durationMs).toBe(2200); // 2000 + 200
+    expect(cb.srcIn).toBe(4800);
+    expect(cc.startMs).toBe(3200); // desceu 200
+  });
+
+  it("ripple só mexe na PRÓPRIA trilha", () => {
+    // Um clipe de áudio depois do fim de 'a' não pode andar por causa do ripple
+    // na trilha de vídeo.
+    const t0 = tl([
+      vtrack([media("a", 0, 1000), media("b", 1000, 1000, 0, "b.mp4")]),
+      atrack([media("mus", 1500, 2000, 0, "m.mp3")], "a1"),
+    ]);
+    const t = setClipEdge(t0, "a", "out", 500, undefined, true);
+    expect(t.tracks[0].clips[1].startMs).toBe(500); // vídeo b subiu
+    expect(t.tracks[1].clips[0].startMs).toBe(1500); // áudio intacto
+  });
+});
+
 describe("moveClip", () => {
   it("move no tempo (mesma trilha)", () => {
     const t = moveClip(base(), "a", "v1", 4000);

@@ -17,6 +17,7 @@ import {
   type ExportClip,
   type SourceInfo,
 } from "../args";
+import { movePip, resizePip } from "../pip";
 import type { Clip, Timeline, Track } from "../timeline";
 
 /**
@@ -510,6 +511,89 @@ describe.skipIf(!ENABLED)("v0.3 filtros/PiP/velocidade/keyframes/presets (ffmpeg
     expect(cornerLuma).toBeGreaterThan(10);
     extractFrame(out, 1, join(V3DIR, "pip-frame.png"));
     console.log(`\n  [prova] PiP: luma do canto do PiP = ${cornerLuma} (≠ preto)\n`);
+  });
+
+  it("GATE PiP ARRASTO: a math da alça (movePip) leva o PiP pro novo lugar no PIXEL", () => {
+    // A prova que fecha o item de maior valor da rodada: o `transform` que sai do
+    // ARRASTO na prévia (a MESMA `movePip` que a UI chama) tem que se traduzir na
+    // posição do PiP no arquivo EXPORTADO. Base preta pra o PiP (colorido) se
+    // destacar; começa no canto sup-esq e o "usuário" arrasta pro inf-dir.
+    const black = join(V3DIR, "black.mp4");
+    ffmpeg([
+      "-f", "lavfi", "-i", "color=c=black:s=640x480:r=30:d=4",
+      "-c:v", "libx264", "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", black,
+    ]);
+
+    const aspect = 640 / 480;
+    const outAspect = 640 / 480;
+    const start = { x: 0, y: 0, scale: 0.35 };
+    // Arrasta +0.6/+0.6 (movePip grampeia dentro do quadro) → canto inf-dir.
+    const moved = movePip(start, aspect, outAspect, 0.6, 0.6).transform;
+    expect(moved.x).toBeGreaterThan(0.5);
+    expect(moved.y).toBeGreaterThan(0.5);
+
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 4000, path: black, srcIn: 0 }]),
+      vtrack([{ id: "b", startMs: 0, durationMs: 4000, path: B, srcIn: 0, transform: moved }], "v2"),
+    ]);
+    const out = join(V3DIR, "pip-drag.mp4");
+    ffmpeg(
+      filterComplexArgs(
+        tl,
+        { [black]: sourceOf(black, { hasAudio: false, audioCodec: null }), [B]: sourceOf(B) },
+        out,
+      ),
+    );
+
+    // Canto NOVO (inf-dir, dentro do PiP) tem imagem; canto ANTIGO (sup-esq, de
+    // onde o PiP saiu) voltou a ser preto. É o "moveu de verdade", não só "existe".
+    const newCorner = avgLumaRegion(out, 1, moved.x + 0.05, moved.y + 0.05, 0.15, 0.15);
+    const oldCorner = avgLumaRegion(out, 1, 0.05, 0.05, 0.15, 0.15);
+    expect(newCorner).toBeGreaterThan(20);
+    expect(oldCorner).toBeLessThan(10);
+    extractFrame(out, 1, join(V3DIR, "pip-drag-frame.png"));
+    console.log(
+      `\n  [prova] PiP arrastado p/ (${moved.x.toFixed(2)},${moved.y.toFixed(2)}): ` +
+        `canto novo luma ${newCorner} · canto antigo ${oldCorner} (preto)\n`,
+    );
+  });
+
+  it("GATE PiP ARRASTO: redimensionar por um canto (resizePip) muda o TAMANHO no pixel", () => {
+    // O usuário agarra o canto SE e o puxa: a caixa cresce. Prova quantitativa:
+    // um PiP maior cobre uma faixa que num PiP pequeno estaria preta.
+    const black = join(V3DIR, "black2.mp4");
+    ffmpeg([
+      "-f", "lavfi", "-i", "color=c=black:s=640x480:r=30:d=4",
+      "-c:v", "libx264", "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", black,
+    ]);
+    const aspect = 640 / 480;
+    const outAspect = 640 / 480;
+    // Parte de um PiP pequeno no canto sup-esq (âncora); arrasta o canto SE até
+    // ~0.6 → largura ~0.6.
+    const start = { x: 0, y: 0, scale: 0.2 };
+    const big = resizePip(start, aspect, outAspect, "se", 0.6, 0.6);
+    expect(big.scale).toBeGreaterThan(0.5);
+    expect(big.x).toBeCloseTo(0, 6); // âncora sup-esq fixa
+
+    const tl = timeline([
+      vtrack([{ id: "a", startMs: 0, durationMs: 4000, path: black, srcIn: 0 }]),
+      vtrack([{ id: "b", startMs: 0, durationMs: 4000, path: B, srcIn: 0, transform: big }], "v2"),
+    ]);
+    const out = join(V3DIR, "pip-resize.mp4");
+    ffmpeg(
+      filterComplexArgs(
+        tl,
+        { [black]: sourceOf(black, { hasAudio: false, audioCodec: null }), [B]: sourceOf(B) },
+        out,
+      ),
+    );
+
+    // A região ~0.45..0.55 (dentro do PiP grande de ~0.6, fora de um de 0.2) tem
+    // imagem — prova de que o resize esticou a caixa.
+    const insideBig = avgLumaRegion(out, 1, 0.45, 0.45, 0.08, 0.08);
+    expect(insideBig).toBeGreaterThan(20);
+    extractFrame(out, 1, join(V3DIR, "pip-resize-frame.png"));
+    console.log(`\n  [prova] PiP redimensionado p/ scale ${big.scale.toFixed(2)}: luma em 0.5 = ${insideBig}\n`);
   });
 
   it("GATE crop: recorte muda a resolução composta e o conteúdo, mantendo o alvo", () => {

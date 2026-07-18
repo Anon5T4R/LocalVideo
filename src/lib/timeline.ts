@@ -447,6 +447,11 @@ export function splitAt(tl: Timeline, id: string, at: number): Timeline {
  *   passar do fim do arquivo (`srcLimit`).
  *
  * Título não tem arquivo: aparar só muda a duração/posição na timeline.
+ *
+ * **Ripple** (`ripple = true`): aparar não deixa mais buraco — os vizinhos à
+ * frente na MESMA trilha andam junto, mantendo a fila colada. É o que separa um
+ * NLE de um cortador de vídeo. As duas bordas têm regra própria (ver abaixo);
+ * ambas preservam a adjacência sem inventar sobreposição.
  */
 export function setClipEdge(
   tl: Timeline,
@@ -454,31 +459,52 @@ export function setClipEdge(
   edge: "in" | "out",
   timelineMs: number,
   srcLimit?: number,
+  ripple = false,
 ): Timeline {
   const loc = locate(tl, id);
   if (!loc) return tl;
   const { clip, ti } = loc;
   const end = clipEnd(clip);
+  const oldEnd = end;
   const media = isMedia(clip);
   // Com velocidade, 1 ms de borda anda `speed` ms na fonte — os limites de fonte
   // (srcIn≥0, srcOut≤arquivo) viram limites de tempo de timeline dividindo por
   // `speed`.
   const sp = clipSpeed(clip);
   let next: Clip;
+  // Quanto os vizinhos com `startMs >= oldEnd` deslocam (só no ripple).
+  let shiftBy = 0;
 
   if (edge === "in") {
-    // A borda esquerda não pode passar da direita (mínimo 1 ms de clipe) nem
-    // fazer o `srcIn` ficar negativo.
-    const minStart = media ? clip.startMs - (clip.srcIn ?? 0) / sp : 0;
-    const newStart = Math.round(Math.max(minStart, Math.min(timelineMs, end - 1)));
-    const delta = newStart - clip.startMs;
-    if (delta === 0) return tl;
-    next = {
-      ...clip,
-      startMs: newStart,
-      durationMs: clipDuration(clip) - delta,
-      ...(media ? { srcIn: Math.max(0, Math.round((clip.srcIn ?? 0) + delta * sp)) } : {}),
-    };
+    if (ripple) {
+      // Ripple na borda IN: mantém o START colado (não abre buraco ANTES), apara
+      // a CABEÇA (avança `srcIn` e encurta) e PUXA a cauda pelo tanto que o clipe
+      // encurtou. O `srcOut` é preservado — só o miolo visível do começo muda —
+      // e nada fica boiando. `headDelta > 0` corta cabeça; `< 0` devolve cabeça.
+      const maxHead = clipDuration(clip) - 1; // deixa ≥ 1 ms de clipe
+      const minHead = media ? -((clip.srcIn ?? 0) / sp) : Number.NEGATIVE_INFINITY; // srcIn ≥ 0
+      const headDelta = Math.round(Math.max(minHead, Math.min(timelineMs - clip.startMs, maxHead)));
+      if (headDelta === 0) return tl;
+      next = {
+        ...clip,
+        durationMs: clipDuration(clip) - headDelta,
+        ...(media ? { srcIn: Math.max(0, Math.round((clip.srcIn ?? 0) + headDelta * sp)) } : {}),
+      };
+      shiftBy = -headDelta;
+    } else {
+      // A borda esquerda não pode passar da direita (mínimo 1 ms de clipe) nem
+      // fazer o `srcIn` ficar negativo.
+      const minStart = media ? clip.startMs - (clip.srcIn ?? 0) / sp : 0;
+      const newStart = Math.round(Math.max(minStart, Math.min(timelineMs, end - 1)));
+      const delta = newStart - clip.startMs;
+      if (delta === 0) return tl;
+      next = {
+        ...clip,
+        startMs: newStart,
+        durationMs: clipDuration(clip) - delta,
+        ...(media ? { srcIn: Math.max(0, Math.round((clip.srcIn ?? 0) + delta * sp)) } : {}),
+      };
+    }
   } else {
     // A borda direita não pode passar do começo nem do fim do arquivo.
     let newEnd = Math.round(Math.max(clip.startMs + 1, timelineMs));
@@ -489,10 +515,18 @@ export function setClipEdge(
     const newDur = newEnd - clip.startMs;
     if (newDur === clipDuration(clip)) return tl;
     next = { ...clip, durationMs: newDur };
+    // Ripple na borda OUT: a fila à frente cola no novo fim (encurtou? sobe;
+    // esticou? desce), sem buraco nem sobreposição.
+    if (ripple) shiftBy = clip.startMs + newDur - oldEnd;
   }
 
-  const clips = tl.tracks[ti].clips.slice();
+  let clips = tl.tracks[ti].clips.slice();
   clips[loc.ci] = next;
+  if (ripple && shiftBy !== 0) {
+    clips = clips.map((c) =>
+      c.id !== id && c.startMs >= oldEnd ? { ...c, startMs: Math.max(0, c.startMs + shiftBy) } : c,
+    );
+  }
   return withTrack(tl, ti, clips);
 }
 

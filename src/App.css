@@ -453,6 +453,77 @@ kbd {
   padding: 20px;
   text-align: center;
 }
+
+/* ---------- alças de PiP na prévia ---------- */
+/* A camada é transparente e NÃO captura ponteiro (o clique fora da caixa passa
+   direto pro palco); só a caixa e as alças reagem. */
+.pip-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.pip-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent, #4c8dff);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  background: rgba(76, 141, 255, 0.06);
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.pip-overlay.dragging .pip-box {
+  background: rgba(76, 141, 255, 0.12);
+}
+.pip-h {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 1.5px solid var(--accent, #4c8dff);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  touch-action: none;
+}
+.pip-h.nw {
+  left: -8px;
+  top: -8px;
+  cursor: nwse-resize;
+}
+.pip-h.ne {
+  right: -8px;
+  top: -8px;
+  cursor: nesw-resize;
+}
+.pip-h.sw {
+  left: -8px;
+  bottom: -8px;
+  cursor: nesw-resize;
+}
+.pip-h.se {
+  right: -8px;
+  bottom: -8px;
+  cursor: nwse-resize;
+}
+/* A guia de centro: uma linha fina que só aparece quando o snap agarra o meio. */
+.pip-guide {
+  position: absolute;
+  background: var(--accent, #4c8dff);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.pip-guide.v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.pip-guide.h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
 .preview-bar {
   display: flex;
   align-items: center;
@@ -622,6 +693,13 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* Botão-interruptor (ripple): quando ligado, veste a cor de acento pra não haver
+   dúvida de que o próximo aparar vai puxar os vizinhos. */
+.tl-head button.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
 }
 .tl-zoom {
   display: flex;
@@ -797,6 +875,17 @@ kbd {
   left: -5px;
   border: 5px solid transparent;
   border-top-color: var(--danger);
+}
+/* A guia de encaixe: uma linha fina na marca onde a borda grudou no arrasto. */
+.tl-snapline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--accent);
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 4;
 }
 .tl-foot {
   display: flex;

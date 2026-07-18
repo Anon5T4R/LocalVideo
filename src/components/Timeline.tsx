@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { t } from "../lib/i18n";
 import { formatDuration, nearestThumb } from "../lib/probe";
+import { snapMove, snapValue } from "../lib/snap";
 import {
   clipDuration,
   clipEnd,
@@ -10,6 +11,7 @@ import {
   overlapWithNext,
   timelineDuration,
   type Clip,
+  type Timeline,
   type Track,
 } from "../lib/timeline";
 import { baseName, useEditor } from "../state/editor";
@@ -22,9 +24,28 @@ const LANE_H = 60;
 
 /** O que está sendo arrastado agora. */
 type Drag =
-  | { kind: "move"; id: string; x0: number; start0: number; trackId: string }
+  | { kind: "move"; id: string; x0: number; start0: number; dur0: number; trackId: string }
   | { kind: "in" | "out"; id: string; x0: number; start0: number; end0: number }
   | { kind: "trans"; id: string; x0: number; trans0: number };
+
+/** Distância (px) em que uma borda "quase encostou" já encaixa numa marca. */
+const SNAP_PX = 8;
+
+/**
+ * As marcas de encaixe: as bordas de todos os OUTROS clipes (começo e fim, em
+ * todas as trilhas), o playhead e o zero. Pura pra a régua não precisar recalcular
+ * na mão a cada quadro do arrasto.
+ */
+function snapTargets(tl: Timeline, exceptId: string, playhead: number): number[] {
+  const out: number[] = [0, playhead];
+  for (const tk of tl.tracks) {
+    for (const c of tk.clips) {
+      if (c.id === exceptId) continue;
+      out.push(c.startMs, clipEnd(c));
+    }
+  }
+  return out;
+}
 
 /**
  * A timeline multitrilha da v0.2: trilhas empilhadas, clipes posicionados no
@@ -53,11 +74,16 @@ export default function Timeline() {
   const doSplit = useEditor((s) => s.doSplit);
   const doRemove = useEditor((s) => s.doRemove);
   const doAddTrack = useEditor((s) => s.doAddTrack);
+  const rippleMode = useEditor((s) => s.rippleMode);
+  const setRippleMode = useEditor((s) => s.setRippleMode);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const laneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const dragRef = useRef<Drag | null>(null);
   const [dragging, setDragging] = useState(false);
+  /** A marca (ms) onde o arrasto encaixou agora — pra desenhar a guia. `null` =
+   *  não encaixou (ou não há arrasto). */
+  const [snapLine, setSnapLine] = useState<number | null>(null);
 
   const total = useMemo(() => timelineDuration(timeline), [timeline]);
   const msToPx = (ms: number) => (ms / 1000) * pxPerSec;
@@ -73,6 +99,13 @@ export default function Timeline() {
       const d = dragRef.current;
       if (!d) return;
       const delta = pxToMs(e.clientX - d.x0);
+      // Encaixe: tolerância em ms derivada do zoom (mesmo "tamanho de dedo" em
+      // qualquer escala). Segurar Alt DESLIGA o snap — a saída de emergência pra
+      // posicionar no osso quando a marca atrapalha.
+      const tol = e.altKey ? 0 : pxToMs(SNAP_PX);
+      const s = useEditor.getState();
+      const targets = snapTargets(s.history.present, d.id, s.playhead);
+
       if (d.kind === "move") {
         // Trilha de destino = a lane sob o dedo (senão, a de origem).
         let toTrack = d.trackId;
@@ -80,11 +113,18 @@ export default function Timeline() {
           const r = el.getBoundingClientRect();
           if (e.clientY >= r.top && e.clientY <= r.bottom) toTrack = id;
         }
-        doMoveClip(d.id, toTrack, Math.max(0, d.start0 + delta));
+        const raw = Math.max(0, d.start0 + delta);
+        const snap = snapMove(raw, d.dur0, targets, tol);
+        setSnapLine(snap.guide);
+        doMoveClip(d.id, toTrack, snap.startMs);
       } else if (d.kind === "in") {
-        doTrimEdge(d.id, "in", d.start0 + delta);
+        const snap = snapValue(d.start0 + delta, targets, tol);
+        setSnapLine(snap.target);
+        doTrimEdge(d.id, "in", snap.value);
       } else if (d.kind === "out") {
-        doTrimEdge(d.id, "out", d.end0 + delta);
+        const snap = snapValue(d.end0 + delta, targets, tol);
+        setSnapLine(snap.target);
+        doTrimEdge(d.id, "out", snap.value);
       } else if (d.kind === "trans") {
         // Arrastar a alça pra ESQUERDA aumenta a sobreposição (transição).
         doSetTransition(d.id, d.trans0 - delta);
@@ -93,6 +133,7 @@ export default function Timeline() {
     const onUp = () => {
       dragRef.current = null;
       setDragging(false);
+      setSnapLine(null);
       useEditor.getState().endEdit();
     };
     window.addEventListener("pointermove", onMove);
@@ -141,6 +182,14 @@ export default function Timeline() {
         </button>
         <button onClick={() => doRemove()} title={t("tl.remove")} disabled={!selectedId}>
           🗑 {t("tl.remove")}
+        </button>
+        <button
+          className={rippleMode ? "on" : ""}
+          onClick={() => setRippleMode(!rippleMode)}
+          aria-pressed={rippleMode}
+          title={rippleMode ? t("tl.rippleOn") : t("tl.rippleOff")}
+        >
+          ⇥ {t("tl.ripple")}
         </button>
         <button onClick={() => doAddTrack("video")} title={t("tl.addVideo")}>
           ＋🎬
@@ -201,7 +250,14 @@ export default function Timeline() {
                   hasInfo={c.path ? !!media[c.path] : false}
                   onSelect={() => select(c.id)}
                   onBodyDown={(e) =>
-                    beginDrag(e, { kind: "move", id: c.id, x0: e.clientX, start0: c.startMs, trackId: track.id })
+                    beginDrag(e, {
+                      kind: "move",
+                      id: c.id,
+                      x0: e.clientX,
+                      start0: c.startMs,
+                      dur0: clipDuration(c),
+                      trackId: track.id,
+                    })
                   }
                   onInDown={(e) =>
                     beginDrag(e, { kind: "in", id: c.id, x0: e.clientX, start0: c.startMs, end0: clipEnd(c) })
@@ -216,6 +272,11 @@ export default function Timeline() {
               ))}
             </div>
           ))}
+
+          {/* guia de encaixe: uma linha fina na marca onde a borda grudou */}
+          {dragging && snapLine !== null ? (
+            <div className="tl-snapline" style={{ left: msToPx(snapLine) }} />
+          ) : null}
 
           {/* playhead por cima de tudo */}
           <div className="tl-playhead" style={{ left: msToPx(playhead) }}>
