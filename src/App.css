@@ -1226,3 +1226,12 @@ kbd {
   background: var(--err-bg);
   border-color: var(--err-border);
 }
+
+/* Ícones SVG (componente Icon) alinhados ao texto do botão. `gap` no botão
+   substitui o espaço que existia entre o glifo e o rótulo quando eram texto. */
+button svg,
+.banner svg,
+.tl-lane-badge svg {
+  vertical-align: -0.15em;
+  flex: 0 0 auto;
+}

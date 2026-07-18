@@ -11,6 +11,7 @@ import {
 } from "../lib/compose";
 import { canDecodeExactly, FrameSource, hasWebCodecs } from "../lib/decoder";
 import { t } from "../lib/i18n";
+import Icon from "./Icon";
 import { containRect, movePip, pipBox, resizePip, type Corner } from "../lib/pip";
 import { formatDuration, formatTimecode, gapAdvance } from "../lib/probe";
 import {
@@ -483,7 +484,7 @@ export default function Preview() {
           disabled={!canPlay}
           title={t("sc.jkl")}
         >
-          ◀◀ J
+          <Icon name="rewind" /> J
         </button>
         <button
           className="primary"
@@ -491,14 +492,14 @@ export default function Preview() {
           disabled={!canPlay}
           title={playing ? t("preview.pause") : t("preview.play")}
         >
-          {playing ? "❚❚" : "▶"} {playing ? t("preview.pause") : t("preview.play")}
+          <Icon name={playing ? "pause" : "play"} /> {playing ? t("preview.pause") : t("preview.play")}
         </button>
         <button
           onClick={() => useEditor.getState().nudgeRate(1)}
           disabled={!canPlay}
           title={t("sc.jkl")}
         >
-          L ▶▶
+          L <Icon name="forward" />
         </button>
         <span className="muted small">{quality}</span>
         {mixNote ? (

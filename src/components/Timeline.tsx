@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { t } from "../lib/i18n";
+import Icon from "./Icon";
 import { formatDuration, nearestThumb } from "../lib/probe";
 import { snapMove, snapValue } from "../lib/snap";
 import {
@@ -196,10 +197,10 @@ export default function Timeline() {
         <span className="muted small">{t("tl.stats", { n: clipCount, dur: formatDuration(total) })}</span>
         <span className="toolbar-fill" />
         <button onClick={doSplit} title={t("tl.split")} disabled={clipCount === 0}>
-          ✂ {t("tl.split")}
+          <Icon name="split" /> {t("tl.split")}
         </button>
         <button onClick={() => doRemove()} title={t("tl.remove")} disabled={!selectedId}>
-          🗑 {t("tl.remove")}
+          <Icon name="trash" /> {t("tl.remove")}
         </button>
         <button
           className={rippleMode ? "on" : ""}
@@ -207,20 +208,20 @@ export default function Timeline() {
           aria-pressed={rippleMode}
           title={rippleMode ? t("tl.rippleOn") : t("tl.rippleOff")}
         >
-          ⇥ {t("tl.ripple")}
+          <Icon name="ripple" /> {t("tl.ripple")}
         </button>
         <button onClick={() => doAddTrack("video")} title={t("tl.addVideo")}>
-          ＋🎬
+          <Icon name="addVideo" /> {t("tl.addVideo")}
         </button>
         <button onClick={() => doAddTrack("audio")} title={t("tl.addAudio")}>
-          ＋🔊
+          <Icon name="addAudio" /> {t("tl.addAudio")}
         </button>
         <span className="tl-zoom">
           <button onClick={() => setZoom(pxPerSec / 1.5)} title={t("tl.zoomOut")}>
             −
           </button>
           <button onClick={fit} title={t("tl.zoomFit")} disabled={total <= 0}>
-            ⤢
+            <Icon name="fit" />
           </button>
           <button onClick={() => setZoom(pxPerSec * 1.5)} title={t("tl.zoomIn")}>
             +
@@ -254,7 +255,7 @@ export default function Timeline() {
                 if (e.target === e.currentTarget) seekFromEvent(e);
               }}
             >
-              <span className="tl-lane-badge muted">{track.kind === "video" ? "🎬" : "🔊"}</span>
+              <span className="tl-lane-badge muted"><Icon name={track.kind === "video" ? "addVideo" : "addAudio"} /></span>
               {track.clips.map((c, i) => (
                 <ClipView
                   key={c.id}

@@ -11,6 +11,7 @@ import SettingsModal from "./components/SettingsModal";
 import Timeline from "./components/Timeline";
 import Toasts from "./components/Toasts";
 import { t } from "./lib/i18n";
+import Icon from "./components/Icon";
 import { stepFrames } from "./lib/probe";
 import { baseVideoTrack, clipCount, timelineDuration, timeToClip } from "./lib/timeline";
 import { baseName, useEditor } from "./state/editor";
@@ -339,7 +340,7 @@ export default function App() {
         <span className="toolbar-fill" />
 
         <button onClick={() => void pickAndImport()} disabled={ed.importing || !ed.ffmpegOk}>
-          {ed.importing ? t("top.importing") : `＋ ${t("top.import")}`}
+          {ed.importing ? t("top.importing") : <><Icon name="plus" /> {t("top.import")}</>}
         </button>
         <button onClick={() => guard(() => ed.newProject())}>{t("top.new")}</button>
         <button onClick={() => guard(() => void doOpen())}>{t("top.open")}</button>
@@ -351,10 +352,10 @@ export default function App() {
           disabled={empty}
           title={`${t("title.add")} (T)`}
         >
-          T＋
+          <Icon name="subtitle" /> {t("title.add")}
         </button>
         <button onClick={() => void doImportMarkers()} disabled={empty} title={t("mk.import")}>
-          ⚑
+          <Icon name="check" /> {t("mk.import")}
         </button>
         <button
           className="primary"
@@ -362,23 +363,23 @@ export default function App() {
           disabled={empty || !ed.ffmpegOk}
           title={`${t("sc.export")} (Ctrl+E)`}
         >
-          ⇪ {t("top.export")}
+          <Icon name="export" /> {t("top.export")}
         </button>
         <button onClick={() => ed.doUndo()} disabled={!ed.canUndo()} title={`${t("top.undo")} (Ctrl+Z)`}>
-          ↺
+          <Icon name="undo" label={t("top.undo")} />
         </button>
         <button onClick={() => ed.doRedo()} disabled={!ed.canRedo()} title={`${t("top.redo")} (Ctrl+Y)`}>
-          ↻
+          <Icon name="redo" label={t("top.redo")} />
         </button>
         <button onClick={() => setSettingsOpen(true)} title={t("top.settingsTitle")}>
-          ⚙
+          <Icon name="settings" label={t("top.settingsTitle")} />
         </button>
       </div>
 
-      {!ed.ffmpegOk ? <div className="banner">⚠ {t("warn.noFfmpeg")}</div> : null}
+      {!ed.ffmpegOk ? <div className="banner"><Icon name="warn" /> {t("warn.noFfmpeg")}</div> : null}
       {ed.missing.length > 0 ? (
         <div className="banner">
-          ⚠ {t("warn.missing", { n: ed.missing.length })}{" "}
+          <Icon name="warn" /> {t("warn.missing", { n: ed.missing.length })}{" "}
           <span className="muted">{t("warn.missingHint")}</span>
         </div>
       ) : null}
