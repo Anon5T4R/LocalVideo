@@ -73,6 +73,10 @@ export function audioLayersAt(tl: Timeline, t: number, baseTrackId: string | nul
   const out: AudioLayer[] = [];
   for (const track of tl.tracks) {
     if (track.id === baseTrackId) continue; // a base é do <video>
+    // Trilha silenciada não entra no mix (ver `Track.muted`). Aqui o silêncio é
+    // EXATO, não aproximado: nenhum `<audio>` é criado, e o export faz o mesmo —
+    // é o raro caso em que prévia e arquivo final concordam sem ressalva.
+    if (track.muted) continue;
     for (const c of track.clips) {
       if (!isMedia(c) || c.muted) continue;
       if (t < c.startMs || t >= clipEnd(c)) continue;
@@ -91,7 +95,7 @@ export function audioLayersAt(tl: Timeline, t: number, baseTrackId: string | nul
  *  que a prévia agora mistura as trilhas (e pra não montar o motor à toa). */
 export function hasMixAudio(tl: Timeline, baseTrackId: string | null): boolean {
   return tl.tracks.some(
-    (tk) => tk.id !== baseTrackId && tk.clips.some((c) => isMedia(c) && !c.muted),
+    (tk) => tk.id !== baseTrackId && !tk.muted && tk.clips.some((c) => isMedia(c) && !c.muted),
   );
 }
 
@@ -117,7 +121,10 @@ export function hasMixAudio(tl: Timeline, baseTrackId: string | null): boolean {
  * a prévia separa seria pior que o bug.
  */
 export function usesNonDefaultAudioTrack(tl: Timeline): boolean {
-  return tl.tracks.some((tk) =>
-    tk.clips.some((c) => isMedia(c) && !c.muted && (c.audioStreamIndex ?? 0) > 0),
+  return tl.tracks.some(
+    (tk) =>
+      // Trilha silenciada não soa nem certo nem errado — avisar do limite de
+      // faixa sobre um som que ninguém vai ouvir é ruído no lugar de honestidade.
+      !tk.muted && tk.clips.some((c) => isMedia(c) && !c.muted && (c.audioStreamIndex ?? 0) > 0),
   );
 }

@@ -962,6 +962,13 @@ export function filterComplexArgs(
   const aLabels: string[] = [];
   let ai = 0;
   for (const track of tl.tracks) {
+    // Trilha SILENCIADA (v0.9): nenhum clipe dela vira fluxo de áudio. É aqui que
+    // o mudo de trilha vira arquivo final — o `-i` do clipe continua entrando (o
+    // vídeo dele pode estar sendo composto), mas nenhum `[idx:a:N]` é puxado, e
+    // então não há o que chegar no `amix`. Silenciar TODAS as trilhas deixa
+    // `aLabels` vazio e o filme sai sem faixa de áudio nenhuma, que é o pedido
+    // levado a sério.
+    if (track.muted) continue;
     track.clips.forEach((c, ci) => {
       if (c.path === undefined) return;
       const info = sources[c.path];
@@ -1054,6 +1061,12 @@ export function degenerateClips(tl: Timeline): ExportClip[] | null {
   if (withClips.length !== 1 || withClips[0].kind !== "video") return null;
   const track = withClips[0];
   if (videoTracks[0]?.id !== track.id) return null; // tem que ser a trilha base
+  // Trilha silenciada não cabe no `-c copy`: o concat demuxer COPIA os pacotes,
+  // e entre eles vêm os de áudio — o caminho instantâneo não sabe calar nada.
+  // Sem esta linha, silenciar a trilha única daria um export que ignorava o
+  // botão calado (o pior tipo de bug: o app "funciona" e entrega o contrário).
+  // Cair pro `filter_complex` é o preço, e lá o mudo é honrado de verdade.
+  if (track.muted) return null;
 
   const clips = [...track.clips].sort((a, b) => a.startMs - b.startMs);
   let cursor = 0;

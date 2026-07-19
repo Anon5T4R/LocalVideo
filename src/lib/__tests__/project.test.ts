@@ -234,3 +234,46 @@ describe(".tvproj v1 → migração (o projeto da v0.1 TEM que abrir)", () => {
     expect(() => parseProject(v1)).toThrow(ProjectParseError);
   });
 });
+
+describe(".tvproj — mudo e ordem de trilha (v0.9, SEM bump de versão)", () => {
+  const media = { "C:\v1.mp4": info("C:\v1.mp4"), "C:\v2.mp4": info("C:\v2.mp4") };
+  const muted: Timeline = {
+    ...timeline,
+    tracks: [timeline.tracks[0], { ...timeline.tracks[1], muted: true }],
+  };
+
+  it("o mudo sobrevive ao salvar/abrir", () => {
+    const back = parseProject(serializeProject(muted, media));
+    expect(back.timeline.tracks[1].muted).toBe(true);
+    expect(back.timeline.tracks[0].muted).toBeUndefined();
+  });
+
+  it("a ORDEM das trilhas é o próprio array — reordenar viaja sem campo novo", () => {
+    const trocado: Timeline = { ...timeline, tracks: [...timeline.tracks].reverse() };
+    const back = parseProject(serializeProject(trocado, media));
+    expect(back.timeline.tracks.map((t) => t.id)).toEqual(["a1", "v1"]);
+  });
+
+  it("o arquivo continua dizendo `version: 2` — nada de bump", () => {
+    // Campo OPCIONAL não muda o contrato: um app antigo abre este projeto (só
+    // perde o mudo). Bumpar faria o app antigo RECUSAR o arquivo, que é bem pior.
+    expect(JSON.parse(serializeProject(muted, media)).version).toBe(2);
+  });
+
+  it("projeto SEM o campo abre com as trilhas soando (o padrão por omissão)", () => {
+    const back = parseProject(serializeProject(timeline, media));
+    expect(back.timeline.tracks.every((t) => t.muted === undefined)).toBe(true);
+  });
+
+  it("`muted: false` gravado à mão vira ausência (é o mesmo estado)", () => {
+    const doc = JSON.parse(serializeProject(timeline, media));
+    doc.tracks[1].muted = false;
+    expect("muted" in parseProject(JSON.stringify(doc)).timeline.tracks[1]).toBe(false);
+  });
+
+  it("`muted` com lixo no lugar do booleano não derruba o projeto", () => {
+    const doc = JSON.parse(serializeProject(timeline, media));
+    doc.tracks[1].muted = "sim";
+    expect(parseProject(JSON.stringify(doc)).timeline.tracks[1].muted).toBeUndefined();
+  });
+});

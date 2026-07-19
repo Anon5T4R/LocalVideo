@@ -146,11 +146,20 @@ function parseTrack(raw: unknown): Track {
   if (!t || (t.kind !== "video" && t.kind !== "audio") || !Array.isArray(t.clips)) {
     throw new ProjectParseError("json");
   }
-  return {
+  const track: Track = {
     id: typeof t.id === "string" && t.id ? t.id : migId("tr"),
     kind: t.kind as TrackKind,
     clips: (t.clips as unknown[]).map(parseClip),
   };
+  // v0.9: trilha silenciada. Campo OPCIONAL e por isso SEM bump de
+  // `TIMELINE_VERSION` — o parser já ignora chave que não conhece e só recusa
+  // `version >`, então um app antigo abre um projeto novo sem reclamar (só perde
+  // o mudo, e um "salvar" lá descarta o campo). Só `true` entra: um `muted:
+  // false` gravado à mão vira ausência, que é o mesmo estado.
+  if (t.muted === true) track.muted = true;
+  // A ORDEM das trilhas é o próprio array — reordenar (↑/↓) já viaja no
+  // `.tvproj` sem campo nenhum, pelo mesmo motivo.
+  return track;
 }
 
 function parseClip(raw: unknown): Clip {

@@ -165,6 +165,19 @@ export interface Track {
   id: string;
   kind: TrackKind;
   clips: Clip[];
+  /**
+   * Trilha SILENCIADA: o som dela não toca na prévia nem sai no arquivo final.
+   *
+   * Mora na TRILHA e não em cada clipe porque é interruptor de CAMADA — "tirar a
+   * música de fundo pra ouvir a narração" é um clique, não uma passada por vinte
+   * clipes (e desfazer isso clipe a clipe perderia quais já estavam mudos). O
+   * `Clip.muted` continua existindo e é ortogonal: o clipe cala por si; a trilha
+   * cala todo mundo por cima. Silenciar uma trilha de VÍDEO não some com a
+   * imagem — mudo aqui é sobre som, como no `Clip.muted`.
+   *
+   * Ausente = toca (é o que todo projeto salvo antes da v0.9 diz, por omissão).
+   */
+  muted?: boolean;
 }
 
 /** A timeline inteira. `version` mora aqui pra migração ao abrir um `.tvproj`. */
@@ -449,6 +462,93 @@ export function detachAudio(tl: Timeline, id: string, audioTrackCount: number): 
 /** Adiciona uma trilha (vídeo empilha por cima; áudio mixa). */
 export function addTrack(tl: Timeline, kind: TrackKind): Timeline {
   return { ...tl, tracks: [...tl.tracks, { id: newId(kind === "video" ? "vt" : "at"), kind, clips: [] }] };
+}
+
+/**
+ * Liga/desliga o mudo de uma trilha inteira (ver `Track.muted`). Puro e
+ * não-evento quando já está no estado pedido — assim o Ctrl+Z não gasta passo
+ * clicando duas vezes no mesmo botão.
+ *
+ * `false` REMOVE a chave em vez de gravar `muted: false`: um projeto que nunca
+ * silenciou nada não deve ganhar um campo novo em toda trilha só por ter passado
+ * pela v0.9 (e é o que mantém o `.tvproj` legível e o diff de um save honesto).
+ */
+export function setTrackMuted(tl: Timeline, trackId: string, muted: boolean): Timeline {
+  const ti = tl.tracks.findIndex((t) => t.id === trackId);
+  if (ti < 0) return tl;
+  const cur = tl.tracks[ti].muted ?? false;
+  if (cur === muted) return tl;
+  const tracks = tl.tracks.slice();
+  if (muted) {
+    tracks[ti] = { ...tracks[ti], muted: true };
+  } else {
+    const { muted: _drop, ...rest } = tracks[ti];
+    tracks[ti] = rest;
+  }
+  return { ...tl, tracks };
+}
+
+/**
+ * Dá pra remover esta trilha?
+ *
+ * A única trava é estrutural: **tem que sobrar ao menos uma trilha de vídeo**.
+ * Não é preciosismo — `baseVideoTrack` é a âncora de três coisas (a prévia lê
+ * dela, o import solta o clipe nela, o título nasce nela) e o `parseProject`
+ * RECUSA um `.tvproj` sem trilha de vídeo. Uma timeline sem vídeo seria um
+ * projeto que o próprio app não consegue reabrir.
+ *
+ * Trilha de áudio não tem trava: dá pra ficar sem nenhuma (o `detachAudio` cria
+ * uma quando precisa).
+ */
+export function canRemoveTrack(tl: Timeline, trackId: string): boolean {
+  const track = tl.tracks.find((t) => t.id === trackId);
+  if (!track) return false;
+  if (track.kind !== "video") return true;
+  return tl.tracks.filter((t) => t.kind === "video").length > 1;
+}
+
+/**
+ * Remove uma trilha INTEIRA, com os clipes que estiverem nela. Quem confirma o
+ * estrago (trilha não-vazia) é a UI — aqui é só a operação, e o undo cobre.
+ *
+ * Faltava desde sempre: depois de separar o áudio de um take de duas faixas o
+ * usuário ficava com trilhas que não conseguia tirar de jeito nenhum — trilha
+ * criada era pra sempre.
+ */
+export function removeTrack(tl: Timeline, trackId: string): Timeline {
+  if (!canRemoveTrack(tl, trackId)) return tl;
+  return { ...tl, tracks: tl.tracks.filter((t) => t.id !== trackId) };
+}
+
+/**
+ * Troca uma trilha de lugar com a vizinha DO MESMO TIPO (`dir` −1 = pra cima).
+ *
+ * Do mesmo tipo porque a ordem só significa alguma coisa dentro do tipo: entre
+ * as de vídeo ela é a z-order do overlay (quem está por cima de quem); entre as
+ * de áudio o mix é comutativo e a ordem é só arrumação da tela. Um ↑ que
+ * atravessasse um bloco pro outro faria a lista dançar sem mudar nada no filme.
+ *
+ * **Consequência que a UI precisa deixar visível**: a primeira trilha de vídeo é
+ * a BASE (ver `baseVideoTrack`) — subir uma V2 pro topo a torna a base, e com
+ * isso a prévia passa a tocar o áudio dela e o import passa a soltar clipe nela.
+ * É coerente com o rótulo (a que virar a primeira passa a se chamar V1), e é por
+ * isso que o rótulo é derivado da ordem e não guardado.
+ */
+export function moveTrack(tl: Timeline, trackId: string, dir: -1 | 1): Timeline {
+  const i = tl.tracks.findIndex((t) => t.id === trackId);
+  if (i < 0) return tl;
+  const kind = tl.tracks[i].kind;
+  let j = -1;
+  for (let k = i + dir; k >= 0 && k < tl.tracks.length; k += dir) {
+    if (tl.tracks[k].kind === kind) {
+      j = k;
+      break;
+    }
+  }
+  if (j < 0) return tl;
+  const tracks = tl.tracks.slice();
+  [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
+  return { ...tl, tracks };
 }
 
 /**

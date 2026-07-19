@@ -816,3 +816,58 @@ describe("degenerateClips rejeita os recursos da v0.3", () => {
     expect(degenerateClips(mk({}))).not.toBeNull();
   });
 });
+
+describe("mudo de TRILHA — o caminho do EXPORT (v0.9)", () => {
+  /** Vídeo na base + música numa trilha de áudio: as duas com som. */
+  const both = (mutedTrack?: "v1" | "a1"): Timeline =>
+    tl([
+      { ...vtrack([mediaClip("v", 0, 6000)]), ...(mutedTrack === "v1" ? { muted: true } : {}) },
+      { ...atrack([mediaClip("m", 0, 6000, 0, B)]), ...(mutedTrack === "a1" ? { muted: true } : {}) },
+    ]);
+  const sources = { [A]: src(), [B]: src() };
+
+  it("sem mudo, os dois clipes viram fluxo e entram no amix", () => {
+    const g = fc(filterComplexArgs(both(), sources, "o.mp4"));
+    expect(g).toContain("[0:a:0]");
+    expect(g).toContain("[1:a:0]");
+    expect(g).toContain("amix=inputs=2");
+  });
+
+  it("silenciar a trilha de áudio tira o fluxo DELA do grafo (e o amix some)", () => {
+    const g = fc(filterComplexArgs(both("a1"), sources, "o.mp4"));
+    expect(g).toContain("[0:a:0]"); // o vídeo continua soando
+    expect(g).not.toContain("[1:a:0]"); // a música, não
+    expect(g).not.toContain("amix"); // um fluxo só não precisa de mix
+  });
+
+  it("silenciar a trilha de VÍDEO cala o som dela sem tirar a IMAGEM", () => {
+    const a = filterComplexArgs(both("v1"), sources, "o.mp4");
+    const g = fc(a);
+    expect(g).not.toContain("[0:a:0]"); // sem áudio do vídeo
+    expect(g).toContain("[0:v]"); // mas o quadro continua sendo composto
+    expect(g).toContain("[1:a:0]"); // e a música continua
+  });
+
+  it("TODAS as trilhas mudas ⇒ arquivo sem faixa de áudio nenhuma", () => {
+    const a = filterComplexArgs(both("v1"), { [A]: src(), [B]: src() }, "o.mp4");
+    expect(a).toContain("-c:a"); // guarda do teste seguinte: aqui ainda há áudio
+    const mudo = tl([
+      { ...vtrack([mediaClip("v", 0, 6000)]), muted: true },
+      { ...atrack([mediaClip("m", 0, 6000, 0, B)]), muted: true },
+    ]);
+    const b = filterComplexArgs(mudo, sources, "o.mp4");
+    expect(fc(b)).not.toContain(":a:");
+    // Sem rótulo de áudio não há `-map [outa]` nem codec de áudio pedido.
+    expect(b).not.toContain("[outa]");
+    expect(b).not.toContain("-c:a");
+  });
+
+  it("trilha muda TIRA o export do caminho `-c copy` (que não sabe calar nada)", () => {
+    // Uma trilha só, em fila, sem nada da v0.2: seria o `-c copy` instantâneo…
+    const fila = tl([vtrack([mediaClip("a", 0, 1000), mediaClip("b", 1000, 1000)])]);
+    expect(degenerateClips(fila)).not.toBeNull();
+    // …mas o concat demuxer COPIA os pacotes de áudio junto. Silenciada, ela tem
+    // que cair pro compilador, senão o export ignorava o botão calado.
+    expect(degenerateClips({ ...fila, tracks: [{ ...fila.tracks[0], muted: true }] })).toBeNull();
+  });
+});

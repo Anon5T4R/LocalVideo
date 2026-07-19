@@ -282,13 +282,22 @@ export default function Preview() {
   // usa (`audioGainAt`). Assim a base deixa de ser a única trilha cujo volume só
   // se ouvia depois de exportar. As ressalvas de honestidade (ganho > 1 não sobe
   // no HTMLMedia) são as do cabeçalho de `audiomix.ts` — as mesmas pra todos.
+  //
+  // v0.9: o mudo da TRILHA entra pela mesma porta, num OU com o do clipe — o som
+  // da trilha base sai por este elemento, então é aqui que `Track.muted` vira
+  // silêncio na prévia. Aqui e não numa segunda `useEffect` só dele: duas
+  // effects escrevendo `v.muted` se sobrescreveriam na ordem em que o React
+  // resolvesse rodá-las, e a que perdesse a corrida devolveria o som calada.
+  // (Tentado e MEDIDO no app rodando, inclusive: uma effect nova era anulada por
+  // esta a cada render. O `<video muted={...}>` declarativo também não serve —
+  // o valor não chega ao elemento.)
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     const c = baseHit?.clip;
-    v.muted = !!c?.muted;
+    v.muted = !!c?.muted || !!track?.muted;
     v.volume = c ? audioGainAt(c, playhead) : 1;
-  }, [baseHit, playhead]);
+  }, [baseHit, playhead, track?.muted]);
 
   useEffect(() => {
     const v = videoRef.current;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { snapMove, snapValue } from "../snap";
+import { anchoredScrollLeft, snapMove, snapValue } from "../snap";
 
 describe("snapValue", () => {
   it("gruda na marca mais próxima dentro da tolerância", () => {
@@ -47,5 +47,40 @@ describe("snapMove — encaixa a borda mais perto", () => {
   it("sem marca no alcance devolve o start original", () => {
     const r = snapMove(1234, 500, [0, 5000], 10);
     expect(r).toEqual({ startMs: 1234, guide: null });
+  });
+});
+
+describe("anchoredScrollLeft — o ponto sob o cursor não sai do lugar", () => {
+  /** Onde o ponto ancorado APARECE na tela, relativo à viewport do scroller. */
+  const onScreen = (anchorPx: number, scrollLeft: number, k = 1) => anchorPx * k - scrollLeft;
+
+  it("ampliar 2× mantém a coordenada de tela do ponto ancorado", () => {
+    // Cenário concreto: zoom 40 px/s, scroll em 300px, cursor 500px adentro do
+    // conteúdo — ou seja, aos 200px da viewport. Ampliando pra 80 px/s o mesmo
+    // instante passa a viver em 1000px de conteúdo.
+    const before = onScreen(500, 300); // 200px da borda esquerda da viewport
+    const sl = anchoredScrollLeft(300, 500, 40, 80);
+    expect(sl).toBe(800);
+    expect(onScreen(500, sl, 2)).toBe(before); // 1000 − 800 = 200 ✔
+  });
+
+  it("reduzir mantém igual (é a mesma conta pro outro lado)", () => {
+    const before = onScreen(500, 300);
+    const sl = anchoredScrollLeft(300, 500, 40, 20);
+    expect(sl).toBe(50);
+    expect(onScreen(500, sl, 0.5)).toBe(before); // 250 − 50 = 200 ✔
+  });
+
+  it("não devolve scroll negativo (não existe no DOM)", () => {
+    // Cursor perto do começo e reduzindo muito: a conta pura daria negativo.
+    expect(anchoredScrollLeft(10, 40, 40, 4)).toBe(0);
+  });
+
+  it("zoom que não mudou não mexe no scroll", () => {
+    expect(anchoredScrollLeft(300, 500, 40, 40)).toBe(300);
+  });
+
+  it("zoom de origem inválido é não-evento (não divide por zero)", () => {
+    expect(anchoredScrollLeft(300, 500, 0, 80)).toBe(300);
   });
 });

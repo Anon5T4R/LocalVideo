@@ -14,6 +14,9 @@ import {
   baseVideoTrack,
   canRedo,
   canUndo,
+  moveTrack,
+  removeTrack,
+  setTrackMuted,
   clipCount,
   clipEnd,
   defaultTitle,
@@ -59,6 +62,16 @@ const THUMBS_PER_FILE = 16;
 /** Duração padrão de um título novo, em ms. */
 const TITLE_DEFAULT_MS = 3000;
 
+/** O interruptor do snap sobrevive à sessão: quem edita no osso não quer
+ *  redesligar a cada abertura. `localStorage` (e não o `.tvproj`) porque é jeito
+ *  de trabalhar da PESSOA, não propriedade do projeto — o mesmo critério do tema.
+ *  O `typeof` é o de sempre: este módulo também é importado por teste em Node. */
+const SNAP_KEY = "localvideo.snap";
+function loadSnap(): boolean {
+  if (typeof localStorage === "undefined") return true;
+  return localStorage.getItem(SNAP_KEY) !== "0"; // ausente = ligado (o padrão)
+}
+
 interface EditorState {
   history: History<Timeline>;
   media: Record<string, MediaInfo>;
@@ -85,6 +98,14 @@ interface EditorState {
   editPushed: boolean;
   /** Modo ripple: aparar PUXA os vizinhos (não deixa buraco). */
   rippleMode: boolean;
+  /**
+   * O encaixe (snap) está ligado? Até a v0.8 só existia o Alt, que desliga o
+   * snap ENQUANTO se segura a tecla — ótimo pra uma exceção, péssimo pra quem
+   * está posicionando dez clipes no osso e ficava com a mão presa no teclado.
+   * Agora há o interruptor, e o Alt passa a INVERTER o que ele diz (com snap
+   * desligado, segurar Alt encaixa) — é o mesmo gesto de exceção nos dois modos.
+   */
+  snapMode: boolean;
 
   timeline: () => Timeline;
   duration: () => number;
@@ -109,6 +130,12 @@ interface EditorState {
   doAddTitle: () => void;
   /** Acrescenta uma trilha (vídeo empilha; áudio mixa). */
   doAddTrack: (kind: TrackKind) => void;
+  /** Silencia/dessilencia uma trilha inteira (prévia E export). */
+  doSetTrackMuted: (trackId: string, muted: boolean) => void;
+  /** Remove uma trilha com o que houver nela. A UI confirma quando não é vazia. */
+  doRemoveTrack: (trackId: string) => void;
+  /** Sobe/desce uma trilha entre as do mesmo tipo. */
+  doMoveTrack: (trackId: string, dir: -1 | 1) => void;
   /** Abre uma sessão de arrasto: o arrasto inteiro vira UM passo de undo. */
   beginEdit: () => void;
   endEdit: () => void;
@@ -126,6 +153,7 @@ interface EditorState {
   nudgeRate: (dir: -1 | 1) => void;
   setZoom: (pxPerSec: number) => void;
   setRippleMode: (v: boolean) => void;
+  setSnapMode: (v: boolean) => void;
 
   importMarkers: (json: string) => void;
   /** Importa legendas SRT/VTT como clipes de título editáveis. */
@@ -208,6 +236,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   editing: false,
   editPushed: false,
   rippleMode: false,
+  snapMode: loadSnap(),
 
   timeline: () => get().history.present,
   duration: () => timelineDuration(get().history.present),
@@ -359,6 +388,32 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ history: pushHistory(history, addTrack(history.present, kind)), dirty: true });
   },
 
+  doSetTrackMuted: (trackId, muted) => {
+    const { history } = get();
+    const next = setTrackMuted(history.present, trackId, muted);
+    if (next === history.present) return;
+    set({ history: pushHistory(history, next), dirty: true });
+  },
+
+  doRemoveTrack: (trackId) => {
+    const { history, selectedId } = get();
+    const gone = history.present.tracks.find((t) => t.id === trackId);
+    const next = removeTrack(history.present, trackId);
+    if (next === history.present) return;
+    // O clipe selecionado pode ter ido junto com a trilha — soltar a seleção aqui
+    // evita um inspetor mostrando propriedades de um clipe que não existe mais.
+    const lost = !!gone?.clips.some((c) => c.id === selectedId);
+    set({ history: pushHistory(history, next), dirty: true, ...(lost ? { selectedId: null } : {}) });
+    clampPlayhead(set, get);
+  },
+
+  doMoveTrack: (trackId, dir) => {
+    const { history } = get();
+    const next = moveTrack(history.present, trackId, dir);
+    if (next === history.present) return;
+    set({ history: pushHistory(history, next), dirty: true });
+  },
+
   beginEdit: () => set({ editing: true, editPushed: false }),
   endEdit: () => set({ editing: false, editPushed: false }),
 
@@ -443,6 +498,14 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   setZoom: (pxPerSec) => set({ pxPerSec: Math.max(4, Math.min(400, pxPerSec)) }),
   setRippleMode: (rippleMode) => set({ rippleMode }),
+  setSnapMode: (snapMode) => {
+    try {
+      localStorage.setItem(SNAP_KEY, snapMode ? "1" : "0");
+    } catch {
+      /* sem localStorage (teste em Node) o interruptor ainda vale na sessão */
+    }
+    set({ snapMode });
+  },
 
   /**
    * Ponte com o LocalRecord: marcadores viram cortes. (Estado real da ponte no

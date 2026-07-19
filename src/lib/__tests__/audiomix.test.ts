@@ -147,3 +147,48 @@ describe("usesNonDefaultAudioTrack — o gatilho do aviso honesto da prévia", (
     expect(usesNonDefaultAudioTrack(t)).toBe(false);
   });
 });
+
+describe("mudo de TRILHA — o caminho da prévia (v0.9)", () => {
+  const t0 = () =>
+    tl([
+      track("v1", "video", [media("v", 0, 6000)]),
+      track("a1", "audio", [media("mus", 0, 6000)]),
+      track("a2", "audio", [media("nar", 0, 6000)]),
+    ]);
+
+  it("trilha silenciada NÃO gera camada de áudio", () => {
+    // Antes: as duas trilhas de fundo tocam.
+    expect(audioLayersAt(t0(), 2000, "v1").map((l) => l.clipId)).toEqual(["mus", "nar"]);
+    // Silenciando a música, só sobra a narração — e é silêncio EXATO (nenhum
+    // <audio> chega a ser criado), não um ganho zero disfarçado.
+    const muted = tl([
+      track("v1", "video", [media("v", 0, 6000)]),
+      { ...track("a1", "audio", [media("mus", 0, 6000)]), muted: true },
+      track("a2", "audio", [media("nar", 0, 6000)]),
+    ]);
+    expect(audioLayersAt(muted, 2000, "v1").map((l) => l.clipId)).toEqual(["nar"]);
+  });
+
+  it("com TODAS as trilhas de fundo mudas não há mix nenhum", () => {
+    const muted = tl([
+      track("v1", "video", [media("v", 0, 6000)]),
+      { ...track("a1", "audio", [media("mus", 0, 6000)]), muted: true },
+    ]);
+    expect(audioLayersAt(muted, 2000, "v1")).toHaveLength(0);
+    // E o aviso "a prévia mistura as faixas" some junto: não há o que misturar.
+    expect(hasMixAudio(muted, "v1")).toBe(false);
+  });
+
+  it("trilha muda não dispara o aviso de faixa não-padrão", () => {
+    // O aviso existe pra dizer que a prévia toca a faixa errada; sobre um som que
+    // ninguém vai ouvir ele é ruído, não honestidade.
+    const t = tl([
+      track("v1", "video", [media("v", 0, 6000)]),
+      {
+        ...track("a1", "audio", [media("sis", 0, 6000, { audioStreamIndex: 1 })]),
+        muted: true,
+      },
+    ]);
+    expect(usesNonDefaultAudioTrack(t)).toBe(false);
+  });
+});

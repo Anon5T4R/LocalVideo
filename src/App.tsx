@@ -261,7 +261,12 @@ export default function App() {
       // cortar a timeline por trás do diálogo de exportar, nem `Del` sumir com o
       // clipe que a pessoa está prestes a exportar.
       const ui = useUi.getState();
-      const modal = useExport.getState().open || ui.settingsOpen || ui.menuOpen || pending !== null;
+      const modal =
+        useExport.getState().open ||
+        ui.settingsOpen ||
+        ui.menuOpen ||
+        ui.confirmOpen ||
+        pending !== null;
       if (modal) return;
 
       const s = useEditor.getState();

@@ -9,6 +9,34 @@
  * teste é bug de posição esperando o release.
  */
 
+/**
+ * O `scrollLeft` que mantém PARADO o ponto sob o cursor ao mudar o zoom — a
+ * conta do Ctrl+roda.
+ *
+ * Sem ela, ampliar leva o instante que se estava olhando pra fora da tela e o
+ * gesto vira "ampliar e depois caçar de novo o lugar". Com ela, o zoom acontece
+ * DEBAIXO do cursor, que é o que o dedo espera de qualquer mapa.
+ *
+ * `anchorPx` é a distância do cursor até o começo do CONTEÚDO (não da viewport):
+ * `clientX − rect.left do tl-inner`. Como a posição em tela do ponto é
+ * `viewportLeft − scrollLeft + anchorPx`, mantê-la fixa é resolver
+ * `−sl₂ + anchorPx·(z₂/z₁) = −sl₁ + anchorPx`. Daí a fórmula abaixo.
+ *
+ * O piso em 0 é do DOM (não existe scroll negativo); o teto o navegador aplica
+ * sozinho ao atribuir, e não dá pra calcular aqui sem saber a largura da
+ * viewport — deixar pra ele é mais confiável que adivinhar.
+ */
+export function anchoredScrollLeft(
+  scrollLeft: number,
+  anchorPx: number,
+  fromPxPerSec: number,
+  toPxPerSec: number,
+): number {
+  if (fromPxPerSec <= 0) return scrollLeft;
+  const k = toPxPerSec / fromPxPerSec;
+  return Math.max(0, scrollLeft + anchorPx * k - anchorPx);
+}
+
 /** Encaixa `value` na marca mais PRÓXIMA dentro de `tol`. Sem marca no alcance,
  *  devolve o valor original e `target: null`. Empate → a marca mais próxima
  *  (a última varrida, por estabilidade). */

@@ -773,16 +773,114 @@ kbd {
   display: flex;
   gap: 4px;
 }
+/* O scroller dos DOIS eixos (v0.9).
+ *
+ * Antes era `overflow-y: hidden` e a pilha de trilhas crescia pra fora: como o
+ * `.tl` é `flex-shrink: 0`, cada trilha nova (61px) EMPURRAVA o workspace e, com
+ * 5+ trilhas, a prévia sumia e as lanes de baixo ficavam inalcançáveis. Com o
+ * `max-height` a timeline para de crescer e passa a rolar — e é por isso que os
+ * cabeçalhos precisam ser `sticky` (abaixo): o eixo X continua rolando por
+ * baixo deles.
+ *
+ * 300px = régua (23) + ~4,5 lanes. Passou disso, rola; e o pan/zoom da roda
+ * (Ctrl+roda, Shift+roda) alcança o resto sem caçar barra de rolagem. */
 .tl-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
+  max-height: 300px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* `overscroll-behavior`: chegar no fim da timeline com a roda não pode
+     "vazar" e rolar a página atrás — no pan horizontal isso vira o gesto de
+     voltar página em alguns navegadores. */
+  overscroll-behavior: contain;
 }
+/* Uma linha só: coluna de cabeçalhos + espaço-tempo. `max-content` pra a linha
+   ter a largura do conteúdo (senão o `sticky` da coluna não teria por onde
+   deslizar) e `align-items: flex-start` pra as duas colunas começarem no topo. */
+.tl-grid {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+}
+.tl-heads {
+  position: sticky;
+  left: 0;
+  z-index: 6;
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+/* O vão que alinha a coluna com a régua: MESMA altura e MESMA borda de baixo
+   (22+1), senão cada cabeçalho fica um pixel fora da sua lane e a coluna inteira
+   parece torta lá embaixo. */
+.tl-heads-gap {
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+}
+.tl-head-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px 6px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+}
+.tl-head-row.audio {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+/* Trilha silenciada: a lane inteira desbota e o cabeçalho leva um traço no
+   nome. Não basta o botão ficar aceso — quem olha a régua tem que ver de onde o
+   som sumiu sem ler botão nenhum. */
+.tl-lane.muted-track {
+  opacity: 0.55;
+}
+.tl-head-row.muted-track .tl-head-name em {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+.tl-head-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tl-head-name em {
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+.tl-head-btns {
+  display: flex;
+  gap: 2px;
+}
+/* Botões minúsculos de propósito: quatro por trilha em 60px de altura. O alvo
+   de clique fica em 20px, que é o mínimo que o mouse acha sem mira fina. */
+.tl-head-btns button {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 3px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.tl-head-btns button.on {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+/* `flex: 1 0 auto` (e não `min-width: 100%`, que virou inútil dentro do flex): a
+   base é a largura inline (o tempo em px), e o "grow" só entra quando o filme é
+   MAIS CURTO que a viewport — aí as lanes vão até a borda em vez de virarem uma
+   tira de 1px ao lado da coluna de cabeçalhos. O espaço extra é depois do fim do
+   filme, então não mexe no msToPx. */
 .tl-inner {
   position: relative;
-  min-width: 100%;
+  flex: 1 0 auto;
   /* Altura cresce com as trilhas (v0.2): ruler + N lanes. */
   height: auto;
 }
@@ -790,7 +888,11 @@ kbd {
   position: relative;
   height: 22px;
   border-bottom: 1px solid var(--border);
-  cursor: pointer;
+  cursor: ew-resize;
+  /* O scrub arrasta em cima de texto (os rótulos dos ticks): sem isto o gesto
+     vira seleção de texto azul no meio da régua. */
+  user-select: none;
+  touch-action: none;
 }
 .tl-tick {
   position: absolute;
@@ -1004,28 +1106,9 @@ kbd {
 .tl-lane.audio {
   background: color-mix(in srgb, var(--accent) 5%, var(--bg));
 }
-/* Cabeçalho da trilha: ícone + "V1"/"A1". Vira um chip com fundo pra continuar
-   legível quando um clipe passa por baixo dele. */
-.tl-lane-badge {
-  position: absolute;
-  top: 3px;
-  left: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 78%, transparent);
-  font-size: 11px;
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0.75;
-}
-.tl-lane-badge em {
-  font-style: normal;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
+/* (O `.tl-lane-badge` saiu na v0.9: o rótulo da trilha deixou de flutuar DENTRO
+   da lane — onde sumia debaixo do primeiro clipe — e virou a coluna fixa de
+   cabeçalhos, `.tl-heads`.) */
 /* Nome da faixa-fonte num clipe de áudio destacado ("Microfone", "Áudio do
    sistema"): o que diz qual clipe é qual sem abrir o inspetor. */
 .tl-srctrack {
@@ -1399,7 +1482,7 @@ kbd {
    substitui o espaço que existia entre o glifo e o rótulo quando eram texto. */
 button svg,
 .banner svg,
-.tl-lane-badge svg {
+.tl-head-name svg {
   vertical-align: -0.15em;
   flex: 0 0 auto;
 }

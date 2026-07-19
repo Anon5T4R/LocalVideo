@@ -8,8 +8,12 @@ import {
   appendMedia,
   baseVideoTrack,
   canRedo,
+  canRemoveTrack,
   canUndo,
   clipEnd,
+  moveTrack,
+  removeTrack,
+  setTrackMuted,
   clipCount,
   clipSpeed,
   defaultTitle,
@@ -634,5 +638,87 @@ describe("duplicateClip — Ctrl+D", () => {
   it("id inexistente devolve a MESMA timeline", () => {
     const t0 = base();
     expect(duplicateClip(t0, "zzz")).toBe(t0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Trilhas: mudo, remover, reordenar (v0.9 — F5)                       */
+/* ------------------------------------------------------------------ */
+
+describe("setTrackMuted — o interruptor de camada", () => {
+  it("liga o mudo e é não-evento quando já está ligado", () => {
+    const t0 = tl([vtrack([media("v", 0, 3000)]), atrack([media("a", 0, 3000)])]);
+    const on = setTrackMuted(t0, "a1", true);
+    expect(on.tracks[1].muted).toBe(true);
+    // Clicar de novo no mesmo estado não pode gastar um passo de undo.
+    expect(setTrackMuted(on, "a1", true)).toBe(on);
+    // A trilha de cima não foi tocada (identidade preservada).
+    expect(on.tracks[0]).toBe(t0.tracks[0]);
+  });
+
+  it("desligar REMOVE a chave (não grava `muted: false`)", () => {
+    const t0 = tl([vtrack([]), atrack([], "a1")]);
+    const off = setTrackMuted(setTrackMuted(t0, "a1", true), "a1", false);
+    expect("muted" in off.tracks[1]).toBe(false);
+  });
+
+  it("trilha inexistente é não-evento", () => {
+    const t0 = tl([vtrack([])]);
+    expect(setTrackMuted(t0, "zzz", true)).toBe(t0);
+  });
+});
+
+describe("canRemoveTrack / removeTrack — a trilha deixa de ser pra sempre", () => {
+  it("remove uma trilha de áudio com os clipes dentro", () => {
+    const t0 = tl([vtrack([media("v", 0, 3000)]), atrack([media("a", 0, 3000)])]);
+    const out = removeTrack(t0, "a1");
+    expect(out.tracks).toHaveLength(1);
+    expect(locate(out, "a")).toBeNull();
+  });
+
+  it("a ÚLTIMA trilha de vídeo não sai — o projeto não reabriria sem ela", () => {
+    const t0 = tl([vtrack([]), atrack([])]);
+    expect(canRemoveTrack(t0, "v1")).toBe(false);
+    expect(removeTrack(t0, "v1")).toBe(t0);
+    // Com duas, a de cima já pode sair.
+    const t1 = tl([vtrack([], "v1"), vtrack([], "v2"), atrack([])]);
+    expect(canRemoveTrack(t1, "v1")).toBe(true);
+    expect(removeTrack(t1, "v1").tracks.map((t) => t.id)).toEqual(["v2", "a1"]);
+  });
+
+  it("a última trilha de ÁUDIO sai sem trava (o detach cria outra quando precisa)", () => {
+    const t0 = tl([vtrack([]), atrack([])]);
+    expect(canRemoveTrack(t0, "a1")).toBe(true);
+    expect(removeTrack(t0, "a1").tracks).toHaveLength(1);
+  });
+});
+
+describe("moveTrack — reordenar entre as do MESMO tipo", () => {
+  const t0 = () => tl([vtrack([], "v1"), vtrack([], "v2"), atrack([], "a1"), atrack([], "a2")]);
+
+  it("sobe/desce trocando com a vizinha do mesmo tipo", () => {
+    expect(moveTrack(t0(), "v2", -1).tracks.map((t) => t.id)).toEqual(["v2", "v1", "a1", "a2"]);
+    expect(moveTrack(t0(), "a1", 1).tracks.map((t) => t.id)).toEqual(["v1", "v2", "a2", "a1"]);
+  });
+
+  it("PULA as de outro tipo em vez de atravessar o bloco", () => {
+    // "v2" descendo procura outra de VÍDEO abaixo; não há, então é não-evento
+    // (não vai parar no meio das de áudio, onde a ordem não significaria nada).
+    const t = t0();
+    expect(moveTrack(t, "v2", 1)).toBe(t);
+    expect(moveTrack(t, "a1", -1)).toBe(t);
+  });
+
+  it("nas pontas e com id inexistente é não-evento", () => {
+    const t = t0();
+    expect(moveTrack(t, "v1", -1)).toBe(t);
+    expect(moveTrack(t, "a2", 1)).toBe(t);
+    expect(moveTrack(t, "zzz", -1)).toBe(t);
+  });
+
+  it("subir a 2ª trilha de vídeo a torna a BASE (é o rótulo seguindo a ordem)", () => {
+    const t = tl([vtrack([media("a", 0, 1000)], "v1"), vtrack([media("b", 0, 1000)], "v2")]);
+    expect(baseVideoTrack(t)!.id).toBe("v1");
+    expect(baseVideoTrack(moveTrack(t, "v2", -1))!.id).toBe("v2");
   });
 });

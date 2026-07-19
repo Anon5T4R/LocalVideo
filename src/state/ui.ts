@@ -43,9 +43,20 @@ interface UiState {
    * É a mesma trava que `settingsOpen` e o modal de exportação já tinham.
    */
   menuOpen: boolean;
+  /**
+   * Há uma CONFIRMAÇÃO aberta (remover trilha não-vazia)?
+   *
+   * Existe pelo mesmo motivo que `menuOpen`: o handler global de teclas do `App`
+   * precisa calar. Sem isto, "Del" enquanto se lê "remover a trilha com 4
+   * clipes?" apagaria um clipe por trás do diálogo — e o usuário atribuiria o
+   * sumiço ao botão que ainda nem clicou. Campo próprio (e não reusar
+   * `menuOpen`) porque o nome é o que explica a trava daqui a seis meses.
+   */
+  confirmOpen: boolean;
 
   setTheme: (t: Theme) => void;
   setMenuOpen: (v: boolean) => void;
+  setConfirmOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
   /** Abre/fecha uma seção do inspetor (`open` explícito sobrescreve o padrão). */
   toggleSection: (id: string, open: boolean) => void;
@@ -92,8 +103,10 @@ export const useUi = create<UiState>((set) => ({
   toasts: [],
   sections: {},
   menuOpen: false,
+  confirmOpen: false,
 
   setMenuOpen: (menuOpen) => set({ menuOpen }),
+  setConfirmOpen: (confirmOpen) => set({ confirmOpen }),
   toggleSection: (id, open) => set((s) => ({ sections: { ...s.sections, [id]: open } })),
 
   setTheme: (theme) => {

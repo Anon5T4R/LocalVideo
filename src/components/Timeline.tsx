@@ -5,8 +5,9 @@ import Icon from "./Icon";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
 import { audioTrackAt, formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
 import type { MediaInfo } from "../lib/probe";
-import { snapMove, snapValue } from "../lib/snap";
+import { anchoredScrollLeft, snapMove, snapValue } from "../lib/snap";
 import {
+  canRemoveTrack,
   clipDuration,
   clipEnd,
   isMedia,
@@ -19,12 +20,22 @@ import {
   type Track,
 } from "../lib/timeline";
 import { baseName, useEditor } from "../state/editor";
+import { useUi } from "../state/ui";
 
 /** Passos de régua "redondos" (ms) — a escala tem que ser de relógio. */
 const TICK_STEPS = [200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 300_000, 600_000];
 const MIN_TICK_PX = 64;
 const THUMB_W = 90;
 const LANE_H = 60;
+/** Largura da coluna de cabeçalhos (V1/A1 + botões). Constante daqui e do CSS ao
+ *  mesmo tempo: é ela que o `fit()` desconta da largura útil da régua. */
+const HEAD_W = 116;
+/** Passo do pan por roda, em px de tela. Um "clique" de roda entrega ~100 no
+ *  Chromium; usar o `deltaY` cru faria a régua saltar meia tela por gesto. */
+const WHEEL_PAN_PX = 60;
+/** Quanto um clique de roda amplia. 1.15 dá ~5 cliques por dobrada — fino o
+ *  bastante pra mirar num corte sem virar uma eternidade pra sair do zoom. */
+const WHEEL_ZOOM = 1.15;
 
 /** O que está sendo arrastado agora. */
 type Drag =
@@ -80,17 +91,36 @@ export default function Timeline() {
   const doAddTrack = useEditor((s) => s.doAddTrack);
   const rippleMode = useEditor((s) => s.rippleMode);
   const setRippleMode = useEditor((s) => s.setRippleMode);
+  const snapMode = useEditor((s) => s.snapMode);
+  const setSnapMode = useEditor((s) => s.setSnapMode);
+  const doSetTrackMuted = useEditor((s) => s.doSetTrackMuted);
+  const doRemoveTrack = useEditor((s) => s.doRemoveTrack);
+  const doMoveTrack = useEditor((s) => s.doMoveTrack);
+  const setConfirmOpen = useUi((s) => s.setConfirmOpen);
   const doDetachAudio = useEditor((s) => s.doDetachAudio);
   const doDuplicate = useEditor((s) => s.doDuplicate);
   const doUpdateClip = useEditor((s) => s.doUpdateClip);
   const doAddTitle = useEditor((s) => s.doAddTitle);
   const importEmbeddedSubtitles = useEditor((s) => s.importEmbeddedSubtitles);
   const [menu, setMenu] = useState<{ x: number; y: number; clip: Clip } | null>(null);
+  /** A trilha que o usuário mandou remover e ainda tem clipes dentro: a
+   *  confirmação. `null` = não há nada pra confirmar. */
+  const [killTrack, setKillTrack] = useState<{ id: string; label: string; n: number } | null>(null);
 
+  /** O elemento que ROLA (os dois eixos): cabeçalhos grudam nele pela esquerda e
+   *  as trilhas rolam na vertical dentro dele. */
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** O espaço-tempo da régua. Todo px↔ms sai do rect DELE — e não do scroller —
+   *  porque só ele começa exatamente no ms 0: medir pelo scroller obrigaria a
+   *  descontar `HEAD_W` e o `scrollLeft` na mão em cada gesto, e foi assim que a
+   *  coluna de cabeçalhos deslocaria o clique da régua em 116px. */
+  const innerRef = useRef<HTMLDivElement>(null);
   const laneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const dragRef = useRef<Drag | null>(null);
   const [dragging, setDragging] = useState(false);
+  /** Arrastando a régua (scrub)? Estado próprio: o scrub não mexe na timeline, só
+   *  no playhead, então não abre sessão de undo como os arrastos de clipe. */
+  const [scrubbing, setScrubbing] = useState(false);
   /** A marca (ms) onde o arrasto encaixou agora — pra desenhar a guia. `null` =
    *  não encaixou (ou não há arrasto). */
   const [snapLine, setSnapLine] = useState<number | null>(null);
@@ -140,9 +170,12 @@ export default function Timeline() {
       if (!d) return;
       const delta = pxToMs(e.clientX - d.x0);
       // Encaixe: tolerância em ms derivada do zoom (mesmo "tamanho de dedo" em
-      // qualquer escala). Segurar Alt DESLIGA o snap — a saída de emergência pra
-      // posicionar no osso quando a marca atrapalha.
-      const tol = e.altKey ? 0 : pxToMs(SNAP_PX);
+      // qualquer escala). O Alt INVERTE o interruptor (v0.9) em vez de só
+      // desligar: com o snap ligado ele é a saída de emergência de sempre; com o
+      // snap desligado no botão, ele vira o encaixe pontual — o mesmo dedo serve
+      // pra exceção nos dois modos, que é o que um NLE faz.
+      const on = useEditor.getState().snapMode !== e.altKey;
+      const tol = on ? pxToMs(SNAP_PX) : 0;
       const s = useEditor.getState();
       const targets = snapTargets(s.history.present, d.id, s.playhead);
 
@@ -194,12 +227,96 @@ export default function Timeline() {
     useEditor.getState().beginEdit();
   };
 
-  const seekFromEvent = (e: React.MouseEvent) => {
+  /** Onde no TEMPO está este ponteiro. Mede pelo `tl-inner` (ver `innerRef`). */
+  const msFromEvent = (clientX: number): number | null => {
+    const el = innerRef.current;
+    if (!el) return null;
+    return pxToMs(clientX - el.getBoundingClientRect().left);
+  };
+
+  const seekFromEvent = (e: { clientX: number }) => {
+    const ms = msFromEvent(e.clientX);
+    if (ms !== null) seek(ms);
+  };
+
+  /**
+   * Scrub: arrastar a régua e o filme SEGUIR o dedo.
+   *
+   * Até a v0.8 a régua era um `onClick` — dava pra pular pra um instante, mas não
+   * pra varrer o filme procurando o quadro certo, que é o gesto mais básico de um
+   * NLE. Agora o pointerdown já busca (o clique continua funcionando igual) e o
+   * movimento continua buscando até soltar.
+   *
+   * Não abre `beginEdit`: mover o playhead não é edição e não pode entrar no
+   * histórico — um scrub de dois segundos viraria 120 passos de Ctrl+Z.
+   */
+  useEffect(() => {
+    if (!scrubbing) return;
+    const onMove = (e: PointerEvent) => seekFromEvent(e);
+    const onUp = () => setScrubbing(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrubbing, pxPerSec]);
+
+  const beginScrub = (e: React.PointerEvent) => {
+    // Parar antes de varrer: o ticker do play e o dedo brigariam pelo playhead e
+    // o quadro ficaria pulando entre os dois donos.
+    useEditor.getState().setPlaying(false);
+    seekFromEvent(e);
+    setScrubbing(true);
+    // Capturar é BÔNUS (quem escuta de verdade é a window, acima): serve pra o
+    // gesto sobreviver a sair da janela. E é try/catch obrigatoriamente — com um
+    // pointer que já não está ativo, `setPointerCapture` lança `NotFoundError` e
+    // mata o handler CALADO, levando junto o `setScrubbing` que vem depois. É o
+    // gotcha que já mordeu cinco apps da suíte.
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* pointer não-ativo: o gesto segue pelos listeners da window */
+    }
+  };
+
+  /**
+   * A roda sobre a timeline, com os três papéis que todo NLE dá a ela:
+   * **Ctrl+roda = zoom ANCORADO no cursor** (o ponto sob o mouse não sai do
+   * lugar — ver `anchoredScrollLeft`), **roda = pan horizontal** (é a régua: o
+   * eixo natural dela é o tempo, não a pilha de trilhas) e **Shift+roda =
+   * vertical**, pra alcançar as trilhas de baixo quando passam da altura.
+   *
+   * Listener NATIVO com `{ passive: false }` e não `onWheel`: o React registra o
+   * `wheel` como passivo, e num listener passivo o `preventDefault` é ignorado
+   * (com aviso no console) — a página rolaria junto com o zoom.
+   */
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const x = e.clientX - el.getBoundingClientRect().left + el.scrollLeft;
-    seek(pxToMs(x));
-  };
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const inner = innerRef.current;
+        if (!inner) return;
+        const from = useEditor.getState().pxPerSec;
+        const anchorPx = e.clientX - inner.getBoundingClientRect().left;
+        // `setZoom` grampeia em 4..400; ler DE VOLTA o valor aplicado faz a
+        // âncora acertar mesmo no limite do zoom (senão, no fim de curso o
+        // conteúdo escorregava um pouco a cada clique de roda que não ampliou).
+        setZoom(e.deltaY < 0 ? from * WHEEL_ZOOM : from / WHEEL_ZOOM);
+        const to = useEditor.getState().pxPerSec;
+        el.scrollLeft = anchoredScrollLeft(el.scrollLeft, anchorPx, from, to);
+        return;
+      }
+      if (e.shiftKey) return; // vertical: é o comportamento nativo do scroller
+      e.preventDefault();
+      el.scrollLeft += Math.sign(e.deltaY || e.deltaX) * WHEEL_PAN_PX;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [setZoom]);
 
   // O fantasma do ripple na borda IN (v0.4.1). No ripple, aparar pela esquerda
   // NÃO move a borda: o start fica colado, a alça apara a CABEÇA e a fila puxa —
@@ -225,7 +342,18 @@ export default function Timeline() {
   const fit = () => {
     const el = scrollRef.current;
     if (!el || total <= 0) return;
-    setZoom(((el.clientWidth - 24) / total) * 1000);
+    // `HEAD_W` sai da conta: a coluna de cabeçalhos ocupa o scroller mas NÃO é
+    // espaço de régua. Sem descontá-la, "caber" deixava o fim do filme escondido
+    // atrás dos exatos 116px da coluna.
+    setZoom(((el.clientWidth - HEAD_W - 24) / total) * 1000);
+  };
+
+  /** Fecha a confirmação de remover trilha — e SOLTA a trava de teclas junto.
+   *  Os dois sempre andam em par: esquecer o `setConfirmOpen(false)` deixaria o
+   *  editor mudo pro teclado pelo resto da sessão. */
+  const closeKill = () => {
+    setKillTrack(null);
+    setConfirmOpen(false);
   };
 
   return (
@@ -260,6 +388,14 @@ export default function Timeline() {
         >
           <Icon name="ripple" /> {t("tl.ripple")}
         </button>
+        <button
+          className={snapMode ? "on" : ""}
+          onClick={() => setSnapMode(!snapMode)}
+          aria-pressed={snapMode}
+          title={snapMode ? t("tl.snapOn") : t("tl.snapOff")}
+        >
+          <Icon name="fit" /> {t("tl.snap")}
+        </button>
         <span className="tl-sep" aria-hidden />
         <button onClick={() => doAddTrack("video")} title={t("tl.addVideo")}>
           <Icon name="addVideo" /> {t("tl.addVideo")}
@@ -280,98 +416,134 @@ export default function Timeline() {
         </span>
       </div>
 
+      {/* O scroller dos DOIS eixos. A coluna de cabeçalhos gruda nele pela
+          esquerda (`position: sticky`) e as trilhas passam por baixo; na vertical
+          o `max-height` do CSS segura a pilha, e é isso que faz 8 trilhas
+          pararem de empurrar a prévia pra fora da tela. Playhead e guia de
+          encaixe continuam absolutos dentro do `tl-inner` — o espaço-tempo deles
+          não mudou de dono, só ganhou uma coluna de vizinha. */}
       <div className="tl-scroll" ref={scrollRef}>
-        <div className="tl-inner" style={{ width }}>
-          {/* régua */}
-          <div className="tl-ruler" onClick={seekFromEvent}>
-            {ticks.map((ms) => (
-              <span key={ms} className="tl-tick" style={{ left: msToPx(ms) }}>
-                <i />
-                <em>{formatDuration(ms)}</em>
-              </span>
+        <div className="tl-grid">
+          <div className="tl-heads" style={{ width: HEAD_W }}>
+            {/* Alinha a coluna com a régua: mesma altura, mesma borda de baixo. */}
+            <div className="tl-heads-gap" />
+            {timeline.tracks.map((track) => (
+              <TrackHead
+                key={track.id}
+                track={track}
+                label={laneLabels.get(track.id)?.label ?? ""}
+                hint={laneLabels.get(track.id)?.hint ?? ""}
+                canRemove={canRemoveTrack(timeline, track.id)}
+                onToggleMute={() => doSetTrackMuted(track.id, !track.muted)}
+                onMove={(dir) => doMoveTrack(track.id, dir)}
+                onRemove={() => {
+                  // Vazia sai na hora (não há o que perder); com clipes dentro,
+                  // pergunta — e é a única confirmação da timeline, porque é a
+                  // única ação que leva embora trabalho que não está selecionado
+                  // (o Del some com UM clipe, que o olho vê; isto some com dez).
+                  if (track.clips.length === 0) {
+                    doRemoveTrack(track.id);
+                    return;
+                  }
+                  setConfirmOpen(true);
+                  setKillTrack({
+                    id: track.id,
+                    label: laneLabels.get(track.id)?.label ?? "",
+                    n: track.clips.length,
+                  });
+                }}
+              />
             ))}
           </div>
 
-          {/* trilhas empilhadas */}
-          {timeline.tracks.map((track) => (
-            <div
-              key={track.id}
-              className={`tl-lane ${track.kind}`}
-              style={{ height: LANE_H }}
-              ref={(el) => {
-                if (el) laneRefs.current.set(track.id, el);
-                else laneRefs.current.delete(track.id);
-              }}
-              onClick={(e) => {
-                if (e.target === e.currentTarget) seekFromEvent(e);
-              }}
-            >
-              <span className="tl-lane-badge muted" title={laneLabels.get(track.id)?.hint}>
-                <Icon name={track.kind === "video" ? "addVideo" : "addAudio"} />
-                <em>{laneLabels.get(track.id)?.label}</em>
-              </span>
-              {track.clips.map((c, i) => (
-                <ClipView
-                  key={c.id}
-                  clip={c}
-                  track={track}
-                  index={i}
-                  msToPx={msToPx}
-                  selected={selectedId === c.id}
-                  gone={c.path ? missing.includes(c.path) : false}
-                  strip={c.path ? thumbs[c.path] : undefined}
-                  hasInfo={c.path ? !!media[c.path] : false}
-                  srcTrackName={sourceTrackName(track, c)}
-                  onSelect={() => select(c.id)}
-                  onBodyDown={(e) =>
-                    beginDrag(e, {
-                      kind: "move",
-                      id: c.id,
-                      x0: e.clientX,
-                      start0: c.startMs,
-                      dur0: clipDuration(c),
-                      trackId: track.id,
-                    })
-                  }
-                  onInDown={(e) =>
-                    beginDrag(e, { kind: "in", id: c.id, x0: e.clientX, start0: c.startMs, end0: clipEnd(c) })
-                  }
-                  onOutDown={(e) =>
-                    beginDrag(e, { kind: "out", id: c.id, x0: e.clientX, start0: c.startMs, end0: clipEnd(c) })
-                  }
-                  onTransDown={(e) =>
-                    beginDrag(e, { kind: "trans", id: c.id, x0: e.clientX, trans0: overlapWithNext(track, i) })
-                  }
-                  onContext={(e) => {
-                    e.preventDefault();
-                    select(c.id);
-                    setMenu({ x: e.clientX, y: e.clientY, clip: c });
-                  }}
-                />
+          <div className="tl-inner" ref={innerRef} style={{ width }}>
+            {/* régua — clicar busca, ARRASTAR varre (v0.9) */}
+            <div className="tl-ruler" onPointerDown={beginScrub}>
+              {ticks.map((ms) => (
+                <span key={ms} className="tl-tick" style={{ left: msToPx(ms) }}>
+                  <i />
+                  <em>{formatDuration(ms)}</em>
+                </span>
               ))}
-              {/* o trecho que SAIU pela cabeça durante o ripple na borda IN */}
-              {rippleGhost && rippleGhost.trackId === track.id ? (
-                <div
-                  className="tl-ripple-ghost"
-                  style={{
-                    left: msToPx(rippleGhost.startMs) - msToPx(rippleGhost.trimmedMs),
-                    width: msToPx(rippleGhost.trimmedMs),
-                  }}
-                >
-                  <em>−{formatDuration(rippleGhost.trimmedMs)}</em>
-                </div>
-              ) : null}
             </div>
-          ))}
 
-          {/* guia de encaixe: uma linha fina na marca onde a borda grudou */}
-          {dragging && snapLine !== null ? (
-            <div className="tl-snapline" style={{ left: msToPx(snapLine) }} />
-          ) : null}
+            {/* trilhas empilhadas */}
+            {timeline.tracks.map((track) => (
+              <div
+                key={track.id}
+                className={`tl-lane ${track.kind}${track.muted ? " muted-track" : ""}`}
+                style={{ height: LANE_H }}
+                ref={(el) => {
+                  if (el) laneRefs.current.set(track.id, el);
+                  else laneRefs.current.delete(track.id);
+                }}
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) seekFromEvent(e);
+                }}
+              >
+                {track.clips.map((c, i) => (
+                  <ClipView
+                    key={c.id}
+                    clip={c}
+                    track={track}
+                    index={i}
+                    msToPx={msToPx}
+                    selected={selectedId === c.id}
+                    gone={c.path ? missing.includes(c.path) : false}
+                    strip={c.path ? thumbs[c.path] : undefined}
+                    hasInfo={c.path ? !!media[c.path] : false}
+                    srcTrackName={sourceTrackName(track, c)}
+                    onSelect={() => select(c.id)}
+                    onBodyDown={(e) =>
+                      beginDrag(e, {
+                        kind: "move",
+                        id: c.id,
+                        x0: e.clientX,
+                        start0: c.startMs,
+                        dur0: clipDuration(c),
+                        trackId: track.id,
+                      })
+                    }
+                    onInDown={(e) =>
+                      beginDrag(e, { kind: "in", id: c.id, x0: e.clientX, start0: c.startMs, end0: clipEnd(c) })
+                    }
+                    onOutDown={(e) =>
+                      beginDrag(e, { kind: "out", id: c.id, x0: e.clientX, start0: c.startMs, end0: clipEnd(c) })
+                    }
+                    onTransDown={(e) =>
+                      beginDrag(e, { kind: "trans", id: c.id, x0: e.clientX, trans0: overlapWithNext(track, i) })
+                    }
+                    onContext={(e) => {
+                      e.preventDefault();
+                      select(c.id);
+                      setMenu({ x: e.clientX, y: e.clientY, clip: c });
+                    }}
+                  />
+                ))}
+                {/* o trecho que SAIU pela cabeça durante o ripple na borda IN */}
+                {rippleGhost && rippleGhost.trackId === track.id ? (
+                  <div
+                    className="tl-ripple-ghost"
+                    style={{
+                      left: msToPx(rippleGhost.startMs) - msToPx(rippleGhost.trimmedMs),
+                      width: msToPx(rippleGhost.trimmedMs),
+                    }}
+                  >
+                    <em>−{formatDuration(rippleGhost.trimmedMs)}</em>
+                  </div>
+                ) : null}
+              </div>
+            ))}
 
-          {/* playhead por cima de tudo */}
-          <div className="tl-playhead" style={{ left: msToPx(playhead) }}>
-            <i />
+            {/* guia de encaixe: uma linha fina na marca onde a borda grudou */}
+            {dragging && snapLine !== null ? (
+              <div className="tl-snapline" style={{ left: msToPx(snapLine) }} />
+            ) : null}
+
+            {/* playhead por cima de tudo */}
+            <div className="tl-playhead" style={{ left: msToPx(playhead) }}>
+              <i />
+            </div>
           </div>
         </div>
       </div>
@@ -401,6 +573,81 @@ export default function Timeline() {
           )}
         />
       ) : null}
+
+      {killTrack ? (
+        <div className="modal-backdrop" onClick={closeKill}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>{t("trk.removeTitle", { label: killTrack.label })}</h2>
+            <p className="muted">{t("trk.removeBody", { n: killTrack.n })}</p>
+            <div className="modal-actions">
+              <button onClick={closeKill}>{t("dlg.cancel")}</button>
+              <button
+                className="danger"
+                onClick={() => {
+                  doRemoveTrack(killTrack.id);
+                  closeKill();
+                }}
+              >
+                {t("trk.remove")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * O cabeçalho de UMA trilha: rótulo (V1/A1), mudo, subir/descer, remover.
+ *
+ * Até a v0.8 o rótulo era um badge flutuando DENTRO da lane — sumia debaixo do
+ * primeiro clipe que passasse por ali, e não havia onde pendurar controle
+ * nenhum. Numa coluna fixa ele para de brigar com as miniaturas e vira UI de
+ * verdade: cada trilha ganha os botões que um NLE tem.
+ */
+function TrackHead(p: {
+  track: Track;
+  label: string;
+  hint: string;
+  canRemove: boolean;
+  onToggleMute: () => void;
+  onMove: (dir: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  const muted = !!p.track.muted;
+  return (
+    <div className={`tl-head-row ${p.track.kind}${muted ? " muted-track" : ""}`} style={{ height: LANE_H }}>
+      <span className="tl-head-name" title={p.hint}>
+        <Icon name={p.track.kind === "video" ? "addVideo" : "addAudio"} />
+        <em>{p.label}</em>
+      </span>
+      <span className="tl-head-btns">
+        <button
+          className={muted ? "on" : ""}
+          aria-pressed={muted}
+          onClick={p.onToggleMute}
+          title={muted ? t("trk.unmute") : t("trk.mute")}
+        >
+          {muted ? "🔇" : "🔈"}
+        </button>
+        <button onClick={() => p.onMove(-1)} title={t("trk.up")}>
+          ↑
+        </button>
+        <button onClick={() => p.onMove(1)} title={t("trk.down")}>
+          ↓
+        </button>
+        <button
+          className="danger"
+          onClick={p.onRemove}
+          disabled={!p.canRemove}
+          // Desabilitado só acontece na ÚLTIMA trilha de vídeo: o título diz por
+          // quê, senão o botão cinza parece o app quebrado (ver `canRemoveTrack`).
+          title={p.canRemove ? t("trk.remove") : t("trk.lastVideo")}
+        >
+          ×
+        </button>
+      </span>
     </div>
   );
 }
