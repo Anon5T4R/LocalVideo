@@ -26,7 +26,16 @@
  * - **tempo-fonte**: instante DENTRO do arquivo original (`srcIn`).
  */
 
-export const TIMELINE_VERSION = 2;
+/** Versão do formato `.tvproj`.
+ *
+ *  **3** desde a v0.9.1 (trilha com `muted`). Subiu de propósito, mesmo o campo
+ *  sendo opcional: sem o bump um app ANTIGO abria o projeto novo, ignorava o
+ *  mudo e — o problema de verdade — **descartava o campo ao salvar, calado**.
+ *  Perda silenciosa de trabalho é pior que recusa explícita: com o bump o app
+ *  antigo diz "projeto de versão mais nova" e o usuário sabe o que fazer.
+ *  Decisão do João em 2026-07-19 ("não tem problema perder a retrocompat dessa
+ *  vez"), possível porque a suíte tem um usuário só e ele atualiza tudo. */
+export const TIMELINE_VERSION = 3;
 
 export type TrackKind = "video" | "audio";
 

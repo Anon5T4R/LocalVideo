@@ -25,7 +25,7 @@ const info = (path: string): RawMediaInfo => ({
 });
 
 const timeline: Timeline = {
-  version: 2,
+  version: 3,
   tracks: [
     {
       id: "v1",
@@ -42,7 +42,7 @@ const timeline: Timeline = {
 
 beforeEach(() => __resetMigrationIds());
 
-describe(".tvproj v2", () => {
+describe(".tvproj v3 (formato corrente)", () => {
   it("salva e abre sem perder nada (ida e volta)", () => {
     const media = { "C:\\v1.mp4": info("C:\\v1.mp4"), "C:\\v2.mp4": info("C:\\v2.mp4") };
     const back = parseProject(serializeProject(timeline, media));
@@ -52,7 +52,7 @@ describe(".tvproj v2", () => {
 
   it("guarda e reabre os filtros/velocidade/keyframes da v0.3 (ida e volta)", () => {
     const v3: Timeline = {
-      version: 2,
+      version: 3,
       tracks: [
         {
           id: "v1",
@@ -89,7 +89,7 @@ describe(".tvproj v2", () => {
 
   it("guarda e reabre o tipo da transição (v0.4.1) — e joga fora valor inventado", () => {
     const withTrans: Timeline = {
-      version: 2,
+      version: 3,
       tracks: [
         {
           id: "v1",
@@ -120,7 +120,7 @@ describe(".tvproj v2", () => {
     // faixa 0 — o "Áudio do sistema" virava um segundo microfone, calado, e só
     // no export alguém notava.
     const detached: Timeline = {
-      version: 2,
+      version: 3,
       tracks: [
         {
           id: "v1",
@@ -211,7 +211,7 @@ describe(".tvproj v1 → migração (o projeto da v0.1 TEM que abrir)", () => {
       ],
     });
     const { timeline: tl, media } = parseProject(v1);
-    expect(tl.version).toBe(2);
+    expect(tl.version).toBe(3);
     expect(tl.tracks.map((t) => t.kind)).toEqual(["video", "audio"]);
     // Posições acumuladas: c1 em 0 (2s), c2 logo depois em 2000 (3s).
     expect(tl.tracks[0].clips.map((c) => [c.startMs, c.durationMs, c.srcIn])).toEqual([
@@ -235,7 +235,7 @@ describe(".tvproj v1 → migração (o projeto da v0.1 TEM que abrir)", () => {
   });
 });
 
-describe(".tvproj — mudo e ordem de trilha (v0.9, SEM bump de versão)", () => {
+describe(".tvproj — mudo e ordem de trilha (v0.9)", () => {
   const media = { "C:\v1.mp4": info("C:\v1.mp4"), "C:\v2.mp4": info("C:\v2.mp4") };
   const muted: Timeline = {
     ...timeline,
@@ -254,10 +254,10 @@ describe(".tvproj — mudo e ordem de trilha (v0.9, SEM bump de versão)", () =>
     expect(back.timeline.tracks.map((t) => t.id)).toEqual(["a1", "v1"]);
   });
 
-  it("o arquivo continua dizendo `version: 2` — nada de bump", () => {
+  it("o arquivo declara `version: 3` — o bump é o que impede perda calada", () => {
     // Campo OPCIONAL não muda o contrato: um app antigo abre este projeto (só
     // perde o mudo). Bumpar faria o app antigo RECUSAR o arquivo, que é bem pior.
-    expect(JSON.parse(serializeProject(muted, media)).version).toBe(2);
+    expect(JSON.parse(serializeProject(muted, media)).version).toBe(3);
   });
 
   it("projeto SEM o campo abre com as trilhas soando (o padrão por omissão)", () => {

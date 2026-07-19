@@ -151,11 +151,10 @@ function parseTrack(raw: unknown): Track {
     kind: t.kind as TrackKind,
     clips: (t.clips as unknown[]).map(parseClip),
   };
-  // v0.9: trilha silenciada. Campo OPCIONAL e por isso SEM bump de
-  // `TIMELINE_VERSION` — o parser já ignora chave que não conhece e só recusa
-  // `version >`, então um app antigo abre um projeto novo sem reclamar (só perde
-  // o mudo, e um "salvar" lá descarta o campo). Só `true` entra: um `muted:
-  // false` gravado à mão vira ausência, que é o mesmo estado.
+  // v0.9: trilha silenciada. O campo é opcional, mas o `TIMELINE_VERSION` subiu
+  // pra 3 mesmo assim (ver o porquê na constante): sem o bump o app antigo abria
+  // e DESCARTAVA o mudo ao salvar, calado. Só `true` entra: um `muted: false`
+  // gravado à mão vira ausência, que é o mesmo estado.
   if (t.muted === true) track.muted = true;
   // A ORDEM das trilhas é o próprio array — reordenar (↑/↓) já viaja no
   // `.tvproj` sem campo nenhum, pelo mesmo motivo.
