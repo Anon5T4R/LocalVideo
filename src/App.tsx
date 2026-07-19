@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ClipInspector from "./components/ClipInspector";
 import ContextMenu, { type MenuItem } from "./components/ContextMenu";
 import ExportModal from "./components/ExportModal";
+import HelpModal from "./components/HelpModal";
 import Preview from "./components/Preview";
 import SettingsModal from "./components/SettingsModal";
 import Timeline from "./components/Timeline";
@@ -266,6 +267,7 @@ export default function App() {
         ui.settingsOpen ||
         ui.menuOpen ||
         ui.confirmOpen ||
+        ui.helpOpen ||
         pending !== null;
       if (modal) return;
 
@@ -333,6 +335,13 @@ export default function App() {
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         s.doRemove();
+      } else if (e.key === "?") {
+        // A folha de atalhos. Checar o CARACTERE e não `Shift+/`: em teclado
+        // ABNT2 (o do usuário) a interrogação sai de Shift+; e num alemão de
+        // Shift+ß — casar pela tecla física deixaria o atalho fora do alcance
+        // justamente de quem não usa layout americano.
+        e.preventDefault();
+        useUi.getState().setHelpOpen(true);
       } else if (e.key === "Home") {
         e.preventDefault();
         s.seek(0);
@@ -512,6 +521,7 @@ export default function App() {
       ) : null}
 
       <ExportModal />
+      <HelpModal />
       <SettingsModal />
       <Toasts />
     </div>

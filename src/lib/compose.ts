@@ -23,11 +23,13 @@ import {
   clipDuration,
   clipEnd,
   clipSpeed,
+  transitionDir,
   type Clip,
   type ColorAdjust,
   type Keyframe,
   type Timeline,
   type Track,
+  type TransitionDir,
   type TransitionKind,
 } from "./timeline";
 
@@ -38,7 +40,67 @@ import {
  *  ele continua sendo só o `alpha`. */
 export interface TransitionState {
   kind: TransitionKind;
+  dir: TransitionDir;
   progress: number;
+}
+
+/**
+ * O retângulo JÁ REVELADO por um wipe, em pixels do quadro de saída.
+ *
+ * É o gêmeo em canvas do `wipeVisibleExpr` do compilador (`lib/args.ts`) — as
+ * duas descrevem a MESMA fronteira, uma como condição por pixel pro ffmpeg e
+ * outra como retângulo de recorte pro `ctx.clip()`. Estar em módulo puro e
+ * testado é o que impede a prévia de divergir do arquivo exportado: quando as
+ * duas discordam, o usuário só descobre depois de esperar o render.
+ */
+export function wipeRect(
+  dir: TransitionDir,
+  p: number,
+  W: number,
+  H: number,
+): { x: number; y: number; w: number; h: number } {
+  const f = Math.max(0, Math.min(1, p));
+  switch (dir) {
+    case "lr":
+      return { x: 0, y: 0, w: W * f, h: H };
+    case "rl":
+      return { x: W * (1 - f), y: 0, w: W * f, h: H };
+    case "tb":
+      return { x: 0, y: 0, w: W, h: H * f };
+    case "bt":
+      return { x: 0, y: H * (1 - f), w: W, h: H * f };
+  }
+}
+
+/**
+ * O deslocamento do quadro que entra num SLIDE, em pixels. Gêmeo do
+ * `slideOverlayXY` do compilador, pelo mesmo motivo do `wipeRect`.
+ *
+ * Em `p = 0` o quadro está inteiro fora da tela pelo lado da direção; em `p = 1`
+ * está em (0,0). Sem grampo aqui porque quem chama já limita `p` a 0..1 — a
+ * camada nem existe fora da sobreposição.
+ */
+export function slideOffset(
+  dir: TransitionDir,
+  p: number,
+  W: number,
+  H: number,
+): { dx: number; dy: number } {
+  const f = Math.max(0, Math.min(1, p));
+  // `(f-1)*W` e não `-(1-f)*W`: a segunda forma devolve **−0** quando `f = 1`
+  // (fim da transição). O canvas desenha igual, mas `-0 !== 0` pro `Object.is`
+  // — ou seja, o teste que prova "termina cravado em (0,0)" falharia por um
+  // sinal invisível. Mesmo resultado, sem a armadilha.
+  switch (dir) {
+    case "lr":
+      return { dx: (f - 1) * W, dy: 0 };
+    case "rl":
+      return { dx: (1 - f) * W, dy: 0 };
+    case "tb":
+      return { dx: 0, dy: (f - 1) * H };
+    case "bt":
+      return { dx: 0, dy: (1 - f) * H };
+  }
 }
 
 /** Uma camada de mídia a desenhar (um clipe de vídeo tocando em `t`). */
@@ -157,7 +219,9 @@ export function layersAt(tl: Timeline, t: number): Layer[] {
           srcTimeMs,
           alpha,
           approx: !!c.color,
-          ...(spatial ? { transition: { kind, progress: xf } } : {}),
+          ...(spatial
+            ? { transition: { kind, dir: prev ? transitionDir(prev) : "lr", progress: xf } }
+            : {}),
         });
       } else if (c.title) {
         out.push({ kind: "title", clip: c, alpha: opacityOf(c, t) });

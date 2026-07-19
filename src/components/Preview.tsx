@@ -6,6 +6,8 @@ import {
   colorToCanvasFilter,
   layersAt,
   needsComposite,
+  slideOffset,
+  wipeRect,
   type MediaLayer,
   type TransitionState,
 } from "../lib/compose";
@@ -895,19 +897,20 @@ function drawMedia(
     // entra aqui, sem o filter de cor (no export o eq roda ANTES do pad — a
     // barra não é colorida). É o que mantém a prévia honesta com o arquivo.
     if (transition?.kind === "slide") {
-      const p = Math.max(0, Math.min(1, transition.progress));
-      const off = -(1 - p) * W;
+      // A direção vem do modelo puro (`slideOffset`), a mesma conta que o
+      // compilador escreve no `overlay` — ver `lib/compose.ts`.
+      const { dx: odx, dy: ody } = slideOffset(transition.dir, transition.progress, W, H);
       const f = ctx.filter;
       ctx.filter = "none";
       ctx.fillStyle = "#000";
-      ctx.fillRect(off, 0, W, H);
+      ctx.fillRect(odx, ody, W, H);
       ctx.filter = f;
-      ctx.drawImage(frame, sx, sy, sw, sh, dx + off, dy, dw, dh);
+      ctx.drawImage(frame, sx, sy, sw, sh, dx + odx, dy + ody, dw, dh);
     } else if (transition?.kind === "wipe") {
-      const p = Math.max(0, Math.min(1, transition.progress));
+      const r = wipeRect(transition.dir, transition.progress, W, H);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, 0, W * p, H);
+      ctx.rect(r.x, r.y, r.w, r.h);
       ctx.clip();
       const f = ctx.filter;
       ctx.filter = "none";

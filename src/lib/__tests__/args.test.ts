@@ -749,6 +749,55 @@ describe("transições wipe/slide no compilador (v0.4.1)", () => {
     expect(g).not.toContain("yuva420p");
   });
 
+  /* ---- direções (v0.9.2): a pendência A5 do ESTADO ---- */
+
+  /** O mesmo par a/b, agora com tipo E direção no clipe de trás. */
+  const withDir = (kind: "wipe" | "slide", dir: "lr" | "rl" | "tb" | "bt") =>
+    tl([
+      vtrack([
+        { ...mediaClip("a", 0, 3000, 0, A), transitionKind: kind, transitionDir: dir },
+        mediaClip("b", 2000, 3000, 0, B),
+      ]),
+    ]);
+  const graph = (t: Timeline) => fc(filterComplexArgs(t, { [A]: src(), [B]: src() }, "o.mp4"));
+
+  it("wipe: cada direção troca o EIXO e o SENTIDO da fronteira", () => {
+    // Da esquerda pra direita (o padrão histórico): revela quem está à esquerda.
+    expect(graph(withDir("wipe", "lr"))).toContain("gte(W*T/1.000\\,X)");
+    // Da direita pra esquerda: a fronteira vem de W e desce.
+    expect(graph(withDir("wipe", "rl"))).toContain("gte(X\\,W-W*T/1.000)");
+    // De cima pra baixo / de baixo pra cima: o mesmo no eixo Y, com H.
+    expect(graph(withDir("wipe", "tb"))).toContain("gte(H*T/1.000\\,Y)");
+    expect(graph(withDir("wipe", "bt"))).toContain("gte(Y\\,H-H*T/1.000)");
+  });
+
+  it("slide: horizontal anda no x, vertical anda no y", () => {
+    // b começa em 2 s; a sobreposição dura 1 s. O `min`/`max` é o que CRAVA o
+    // clipe no lugar depois da transição — sem ele o overlay continuaria andando
+    // pra fora da tela do outro lado (o `x` é reavaliado a cada quadro).
+    expect(graph(withDir("slide", "lr"))).toContain("overlay=x='min(0,-W+(t-2.000)*W/1.000)':y=0");
+    expect(graph(withDir("slide", "rl"))).toContain("overlay=x='max(0,W-(t-2.000)*W/1.000)':y=0");
+    expect(graph(withDir("slide", "tb"))).toContain("overlay=x=0:y='min(0,-H+(t-2.000)*H/1.000)'");
+    expect(graph(withDir("slide", "bt"))).toContain("overlay=x=0:y='max(0,H-(t-2.000)*H/1.000)'");
+  });
+
+  it("direção AUSENTE = `lr`: um .tvproj velho compila o grafo idêntico", () => {
+    // É a garantia de compatibilidade que dispensou o bump do TIMELINE_VERSION:
+    // projeto sem `transitionDir` tem que sair exatamente como saía antes.
+    expect(graph(withKind("wipe"))).toBe(graph(withDir("wipe", "lr")));
+    expect(graph(withKind("slide"))).toBe(graph(withDir("slide", "lr")));
+  });
+
+  it("a direção é INERTE no dissolve (não há lado num fade de alfa)", () => {
+    const comDir = tl([
+      vtrack([
+        { ...mediaClip("a", 0, 3000, 0, A), transitionKind: "dissolve", transitionDir: "bt" },
+        mediaClip("b", 2000, 3000, 0, B),
+      ]),
+    ]);
+    expect(graph(comDir)).toBe(graph(withKind("dissolve")));
+  });
+
   it("o tipo só muda o clipe DA transição — o resto do grafo fica quieto", () => {
     // O clipe A (que não entra por transição nenhuma) permanece sem alfa.
     const g = fc(filterComplexArgs(withKind("wipe"), { [A]: src(), [B]: src() }, "o.mp4"));

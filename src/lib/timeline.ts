@@ -101,6 +101,38 @@ export interface Keyframe {
 export type TransitionKind = "dissolve" | "wipe" | "slide";
 
 /**
+ * A DIREÇÃO de um wipe/slide (v0.9.2) — para onde a cortina varre, ou de onde o
+ * clipe novo entra deslizando. Lê-se "de → para": `lr` = da esquerda pra
+ * direita, `bt` = de baixo pra cima.
+ *
+ * ─── Por que campo PRÓPRIO, e não valores novos de `TransitionKind` ──────────
+ *
+ * O caminho óbvio seria `"wipeup" | "wipedown" | …` (é como o `xfade` do ffmpeg
+ * nomeia). Foi descartado por causa do que acontece num app ANTIGO abrindo um
+ * projeto novo: o parser do `.tvproj` só aceita valores conhecidos de
+ * `transitionKind` e DESCARTA o resto (ver `project.ts`), então `"wipeup"`
+ * viraria ausência — ou seja, o wipe do usuário viraria um **dissolve**. Trocar
+ * o tipo da transição é uma mudança que se vê no vídeo exportado.
+ *
+ * Com a direção num campo separado, o app antigo ignora a chave desconhecida e
+ * mantém `transitionKind: "wipe"`: continua sendo um wipe, só na direção padrão.
+ * Degrada no eixo certo — e por isso esta fatia **não precisa de bump** do
+ * `TIMELINE_VERSION` (que a v0.9.1 subiu pra 3).
+ *
+ * Ausente = `lr`, que era o único comportamento possível até aqui.
+ */
+export type TransitionDir = "lr" | "rl" | "tb" | "bt";
+
+/** Todas as direções, na ordem em que o seletor as oferece. */
+export const TRANSITION_DIRS: TransitionDir[] = ["lr", "rl", "tb", "bt"];
+
+/** A direção de um clipe, com o padrão histórico. Num lugar só porque o
+ *  compilador, a prévia e o inspetor têm que concordar no que é "ausente". */
+export function transitionDir(c: Pick<Clip, "transitionDir">): TransitionDir {
+  return c.transitionDir ?? "lr";
+}
+
+/**
  * Um clipe. Pode ser MÍDIA (janela sobre um arquivo) ou TÍTULO (texto). O que
  * distingue é a presença de `path` (mídia) ou `title` (texto) — nunca os dois.
  *
@@ -166,6 +198,8 @@ export interface Clip {
   /* --- transição (v0.4.1) --- */
   /** COMO o próximo clipe entra na sobreposição com este. Ausente = dissolve. */
   transitionKind?: TransitionKind;
+  /** Pra ONDE varre/desliza (v0.9.2). Ausente = `lr`. Inerte no dissolve. */
+  transitionDir?: TransitionDir;
 }
 
 /** Uma trilha: clipes ORDENADOS por `startMs`. Vídeo empilha (overlay/z-order);

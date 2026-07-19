@@ -938,9 +938,23 @@ kbd {
 .tl-clip + .tl-clip {
   margin-left: 2px;
 }
+/* Seleção e hover (v0.9.2). A seleção era 1px de borda + 1px de inset: no meio
+   de uma fileira de miniaturas ela simplesmente não se via, e o hover não
+   existia — nada respondia ao mouse antes do clique. Agora a seleção é anel de
+   2px + brilho (lê-se de longe, em qualquer tema) e o hover é elevação sutil,
+   que é o que diz "isto aqui é clicável" sem competir com a seleção. */
+.tl-clip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
+  z-index: 1;
+}
 .tl-clip.sel {
   border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+  z-index: 2;
 }
 .tl-clip.dragging {
   opacity: 0.45;
@@ -985,6 +999,56 @@ kbd {
   min-width: 0;
   object-fit: cover;
   opacity: 0.9;
+}
+/* A forma de onda do clipe de áudio (v0.9.2). Um `<path>` só, esticado pela
+   caixa do clipe — ver `waveformPath` em `lib/peaks.ts`. Fica ATRÁS do rótulo
+   (que tem fundo translúcido) e não recebe ponteiro: quem responde ao mouse é o
+   clipe inteiro, senão o arrasto morreria ao começar em cima da onda. */
+.tl-wave {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tl-wave svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* A mistura 52% accent + text (e não o accent puro) é MEDIDA, não gosto: com o
+   accent puro a onda ficava em 2,1:1 de contraste contra o corpo do clipe nos
+   temas claros (pastelpink, nature) — abaixo dos 3:1 que a WCAG pede pra
+   elemento gráfico, ou seja, uma onda que o olho perde justo em quem escolheu
+   tema claro. Puxar pro `--text` e subir a opacidade põe os SETE temas acima de
+   3,38:1 sem a onda deixar de ter a cor do app. */
+.tl-wave path {
+  fill: color-mix(in srgb, var(--accent) 52%, var(--text));
+  opacity: 0.85;
+}
+/* Selecionado, a onda ganha corpo junto com o clipe. Ainda uma MISTURA (o
+   accent puro voltaria ao problema de contraste acima): quem diz "selecionado"
+   é o anel de 2px + o brilho, não a onda mudar de cor. */
+.tl-clip.sel .tl-wave path {
+  fill: color-mix(in srgb, var(--accent) 70%, var(--text));
+  opacity: 1;
+}
+/* Numa trilha de ÁUDIO o rótulo sai da faixa de baixo (onde tapava metade da
+   onda, medido: 19px de rótulo sobre 31px de clipe) e vira um CHIP curto no
+   topo, do tamanho do texto. É o que os NLEs fazem: o nome identifica, a onda
+   ocupa o corpo. */
+.tl-lane.audio .tl-clip-label {
+  top: 0;
+  bottom: auto;
+  right: auto;
+  width: max-content;
+  max-width: 100%;
+  gap: 5px;
+  padding: 1px 6px;
+  border-top: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0 0 6px 0;
+  font-size: 10px;
 }
 .tl-clip-label {
   position: absolute;
@@ -1057,6 +1121,37 @@ kbd {
   padding: 0 4px;
 }
 
+/* A etiqueta numérica do arrasto (v0.9.2): posição e delta, colada no gesto.
+   `translate(-50%, -140%)` a põe ACIMA do ponteiro e centrada na borda que está
+   sendo puxada — embaixo ela ficaria debaixo do cursor, que é justamente o que
+   o dedo esconde. Sem ponteiro: no meio de um arrasto, uma etiqueta clicável
+   roubaria o `pointerup` que termina o gesto. */
+.dragtip {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-50%, -140%);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  color: #fff;
+  background: color-mix(in srgb, var(--accent) 82%, #000);
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 45%, transparent);
+}
+.dragtip em {
+  font-style: normal;
+  opacity: 0.85;
+}
+/* O gráfico do envelope precisa ser o bloco de referência da etiqueta (ela é
+   posicionada em % dentro dele). */
+.inspector .kf-wrap {
+  position: relative;
+}
+
 /* O playhead atravessa a régua e os clipes: é a linha do "agora". */
 .tl-playhead {
   position: absolute;
@@ -1092,9 +1187,27 @@ kbd {
   pointer-events: none;
   z-index: 4;
 }
-.tl-foot {
+/* A statusbar única (v0.9.2): dica contextual à esquerda, números à direita.
+   Substitui as DUAS linhas de dica permanentes que havia antes (o rodapé da
+   timeline e o `dragHint` do inspetor). `min-height` fixo pra ela não pular de
+   altura quando a dica troca de uma linha pra outra no meio de um arrasto. */
+.tl-status {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 2px;
+}
+/* A dica pode ser longa; os NÚMEROS é que não podem ser espremidos — são eles
+   que a pessoa vem conferir. */
+.tl-status-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-status .mini {
+  padding: 0 7px;
+  font-weight: 700;
 }
 
 /* ---------- timeline v0.2: trilhas empilhadas ---------- */
@@ -1429,6 +1542,48 @@ kbd {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+
+/* A folha de atalhos (tecla ?). Mais larga que os outros modais porque ela é
+   uma TABELA de referência — quebrar "Ctrl + Shift + S" em duas linhas faria a
+   folha custar mais atenção do que lembrar o atalho. Duas colunas quando cabe,
+   uma quando não (o `auto-fit` decide sozinho). */
+.help-modal {
+  width: min(720px, 94vw);
+}
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px 24px;
+}
+.help-group h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.help-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.help-group li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+/* A coluna de teclas com largura própria: os nomes das ações alinham entre si,
+   que é o que deixa a folha ser VARRIDA em vez de lida linha a linha. */
+.help-group kbd {
+  flex: 0 0 auto;
+  min-width: 96px;
+  text-align: center;
+  white-space: nowrap;
 }
 .settings-row {
   display: flex;

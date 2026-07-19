@@ -53,10 +53,21 @@ interface UiState {
    * `menuOpen`) porque o nome é o que explica a trava daqui a seis meses.
    */
   confirmOpen: boolean;
+  /**
+   * A folha de atalhos (tecla `?`) está aberta?
+   *
+   * Até a v0.9 a lista de atalhos existia só na tela VAZIA — ou seja, ela sumia
+   * exatamente quando começava a ser útil (com projeto aberto não havia como
+   * consultar, e o app tem uns vinte). Entra na mesma trava de teclas que
+   * `menuOpen`/`confirmOpen`: com a folha aberta, "S" não pode cortar a timeline
+   * por trás dela.
+   */
+  helpOpen: boolean;
 
   setTheme: (t: Theme) => void;
   setMenuOpen: (v: boolean) => void;
   setConfirmOpen: (v: boolean) => void;
+  setHelpOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
   /** Abre/fecha uma seção do inspetor (`open` explícito sobrescreve o padrão). */
   toggleSection: (id: string, open: boolean) => void;
@@ -104,9 +115,11 @@ export const useUi = create<UiState>((set) => ({
   sections: {},
   menuOpen: false,
   confirmOpen: false,
+  helpOpen: false,
 
   setMenuOpen: (menuOpen) => set({ menuOpen }),
   setConfirmOpen: (confirmOpen) => set({ confirmOpen }),
+  setHelpOpen: (helpOpen) => set({ helpOpen }),
   toggleSection: (id, open) => set((s) => ({ sections: { ...s.sections, [id]: open } })),
 
   setTheme: (theme) => {

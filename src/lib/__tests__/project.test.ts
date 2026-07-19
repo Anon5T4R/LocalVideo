@@ -114,6 +114,48 @@ describe(".tvproj v3 (formato corrente)", () => {
     expect(parseProject(doc).timeline.tracks[0].clips[0].transitionKind).toBeUndefined();
   });
 
+  it("guarda e reabre a DIREÇÃO do wipe/slide (v0.9.2), sem bump de versão", () => {
+    const comDir: Timeline = {
+      version: 3,
+      tracks: [
+        {
+          id: "v1",
+          kind: "video",
+          clips: [
+            {
+              id: "a",
+              startMs: 0,
+              durationMs: 3000,
+              path: "C:\\v1.mp4",
+              srcIn: 0,
+              transitionKind: "wipe",
+              transitionDir: "bt",
+            },
+            { id: "b", startMs: 2000, durationMs: 3000, path: "C:\\v2.mp4", srcIn: 0 },
+          ],
+        },
+        { id: "a1", kind: "audio", clips: [] },
+      ],
+    };
+    const media = { "C:\\v1.mp4": info("C:\\v1.mp4"), "C:\\v2.mp4": info("C:\\v2.mp4") };
+    const back = parseProject(serializeProject(comDir, media));
+    expect(back.timeline).toEqual(comDir);
+    // A versão do arquivo NÃO subiu: campo novo e opcional, e o app antigo que
+    // ignora a chave continua vendo um wipe (na direção padrão) em vez de perder
+    // a transição. Foi o que dispensou o bump — ver `TransitionDir`.
+    expect(JSON.parse(serializeProject(comDir, media)).version).toBe(3);
+
+    // Direção inventada (arquivo editado à mão) não entra: cai no `lr` padrão,
+    // e o clipe continua com o wipe que o usuário escolheu.
+    const doc =
+      '{"app":"LocalVideo","version":3,"media":{},"tracks":[{"id":"v1","kind":"video","clips":[' +
+      '{"id":"a","startMs":0,"durationMs":1000,"path":"v.mp4","srcIn":0,' +
+      '"transitionKind":"wipe","transitionDir":"diagonal"}]}]}';
+    const c = parseProject(doc).timeline.tracks[0].clips[0];
+    expect(c.transitionDir).toBeUndefined();
+    expect(c.transitionKind).toBe("wipe");
+  });
+
   it("guarda e reabre a FAIXA de áudio de cada clipe (audioStreamIndex)", () => {
     // O cenário do take do LocalRecord: áudio separado em dois clipes, um por
     // faixa. Sem o round-trip, salvar e reabrir devolvia os DOIS apontando pra

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 import { t } from "../lib/i18n";
 import { formatDuration, formatSize, trackDisplayName } from "../lib/probe";
@@ -16,6 +16,9 @@ import {
   type Located,
   type TitleAnchor,
   type Transform,
+  transitionDir,
+  TRANSITION_DIRS,
+  type TransitionDir,
   type TransitionKind,
 } from "../lib/timeline";
 import { baseName, useEditor } from "../state/editor";
@@ -43,7 +46,6 @@ export default function ClipInspector() {
   const timeline = useEditor((s) => s.history.present);
   const media = useEditor((s) => s.media);
   const selectedId = useEditor((s) => s.selectedId);
-  const playhead = useEditor((s) => s.playhead);
   const doUpdateClip = useEditor((s) => s.doUpdateClip);
   const doSetSpeed = useEditor((s) => s.doSetSpeed);
 
@@ -77,7 +79,6 @@ export default function ClipInspector() {
           c={c}
           loc={loc}
           media={media}
-          playhead={playhead}
           doUpdateClip={doUpdateClip}
           doSetSpeed={doSetSpeed}
         />
@@ -212,14 +213,12 @@ function MediaFields({
   c,
   loc,
   media,
-  playhead,
   doUpdateClip,
   doSetSpeed,
 }: {
   c: Clip;
   loc: Located;
   media: Record<string, MediaInfo>;
-  playhead: number;
   doUpdateClip: UpdateClip;
   doSetSpeed: (id: string, speed: number) => void;
 }) {
@@ -397,8 +396,9 @@ function MediaFields({
       >
         {t("clip.reset")}
       </button>
-      {/* playhead na dica pra não sumir de vez com o contexto de tempo */}
-      <p className="muted small">{t("clip.dragHint", { at: formatDuration(playhead) })}</p>
+      {/* (A dica de arrastar + o playhead saíram daqui na v0.9.2: eram a SEGUNDA
+          linha permanente de dica na tela, e agora vivem na statusbar única da
+          timeline, que já mostra os dois com o clipe selecionado.) */}
     </div>
   );
 }
@@ -452,6 +452,16 @@ function Speed({ c, doSetSpeed }: { c: Clip; doSetSpeed: (id: string, speed: num
 }
 
 /* ---------------- transição com o próximo (v0.4.1) ---------------- */
+
+/** A seta de cada direção. Símbolo e não texto: o botão é pequeno, e a seta diz
+ *  em qualquer idioma pra onde a coisa anda (o nome por extenso está no title e
+ *  no `aria-label`, que é quem fala com o leitor de tela). */
+const DIR_ARROW: Record<TransitionDir, string> = {
+  lr: "→",
+  rl: "←",
+  tb: "↓",
+  bt: "↑",
+};
 function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateClip: UpdateClip }) {
   // Só aparece quando a transição EXISTE: há um próximo clipe de mídia e a
   // sobreposição é positiva (a geometria é a transição — sem sobreposição não
@@ -468,6 +478,7 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
     return <p className="muted small">{t("clip.transNone")}</p>;
   }
   const kind: TransitionKind = c.transitionKind ?? "dissolve";
+  const dir = transitionDir(c);
   return (
     <div className="fields">
       <label className="field">
@@ -490,6 +501,32 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
           <option value="slide">{t("trans.slide")}</option>
         </select>
       </label>
+      {/* A DIREÇÃO só existe pra wipe/slide — um dissolve não tem lado, e um
+          seletor cinza ali só faria a pessoa procurar o que ele muda. */}
+      {kind !== "dissolve" ? (
+        <div className="field">
+          <span>{t("clip.transDir")}</span>
+          <div className="seg">
+            {TRANSITION_DIRS.map((d) => (
+              <button
+                key={d}
+                className={dir === d ? "on" : ""}
+                title={t(`trans.dir.${d}`)}
+                aria-label={t(`trans.dir.${d}`)}
+                aria-pressed={dir === d}
+                onClick={() =>
+                  // `lr` é o padrão histórico: escolher ele REMOVE a chave, pelo
+                  // mesmo critério do dissolve acima (o .tvproj não engorda com
+                  // o valor implícito).
+                  doUpdateClip(c.id, { transitionDir: d === "lr" ? null : d })
+                }
+              >
+                {DIR_ARROW[d]}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <span className="muted small">{t("clip.transKindHint")}</span>
     </div>
   );
@@ -663,6 +700,17 @@ function EnvelopeGraph(props: { list: Keyframe[]; max: number; onSet: (next: Key
   const svgRef = useRef<SVGSVGElement>(null);
   const dragIdx = useRef<number | null>(null);
   const pts = [...props.list].sort((a, b) => a.t - b.t);
+  /**
+   * O ponto que está sendo arrastado, pra etiqueta numérica (v0.9.2 — a outra
+   * metade da pendência A5). Um envelope arrastado no olho é rápido, mas
+   * "quanto exatamente?" só a lista numérica respondia — e ela fica embaixo, o
+   * que obrigava a soltar o ponto pra conferir e voltar a arrastar.
+   *
+   * Fora do SVG de propósito: o `viewBox` é 100×40 esticado com
+   * `preserveAspectRatio="none"`, então um `<text>` lá dentro sairia ACHATADO
+   * junto com a curva. Etiqueta em DOM, posicionada em porcentagem, não distorce.
+   */
+  const [tip, setTip] = useState<Keyframe | null>(null);
 
   const toX = (p: Keyframe) => p.t * W;
   const toY = (p: Keyframe) => (1 - clampTo(p.v, props.max) / props.max) * H;
@@ -684,6 +732,7 @@ function EnvelopeGraph(props: { list: Keyframe[]; max: number; onSet: (next: Key
   ].join(" ");
 
   return (
+    <div className="kf-wrap">
     <svg
       ref={svgRef}
       className="kf-graph"
@@ -723,15 +772,32 @@ function EnvelopeGraph(props: { list: Keyframe[]; max: number; onSet: (next: Key
               const hi = i < pts.length - 1 ? pts[i + 1].t - 0.001 : 1;
               const moved = { t: Math.min(hi, Math.max(lo, raw.t)), v: raw.v };
               props.onSet(pts.map((q, j) => (j === i ? moved : q)));
+              setTip(moved);
             }}
             onPointerUp={() => {
               dragIdx.current = null;
+              setTip(null);
               useEditor.getState().endEdit();
             }}
           />
         </g>
       ))}
     </svg>
+      {/* t% (onde no clipe) e v% (quanto) — os dois números que a lista de baixo
+          mostra, agora sem soltar o ponto pra ir conferir. */}
+      {tip ? (
+        <div
+          className="dragtip kf-dragtip"
+          style={{
+            left: `${clamp01(tip.t) * 100}%`,
+            top: `${(1 - clampTo(tip.v, props.max) / props.max) * 100}%`,
+          }}
+        >
+          <b className="tabnum">{Math.round(tip.t * 100)}%</b>
+          <em className="tabnum">{Math.round((tip.v / props.max) * 100)}%</em>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

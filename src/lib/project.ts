@@ -211,6 +211,17 @@ function parseClip(raw: unknown): Clip {
   if (c.transitionKind === "dissolve" || c.transitionKind === "wipe" || c.transitionKind === "slide") {
     base.transitionKind = c.transitionKind;
   }
+  // v0.9.2: a DIREÇÃO do wipe/slide. Campo NOVO e opcional, e por isso o
+  // `TIMELINE_VERSION` **não** subiu: um app da v0.9.1 abre este arquivo, ignora
+  // a chave que não conhece e mantém `transitionKind: "wipe"` — continua sendo
+  // um wipe, só na direção padrão. (Tivesse a direção virado valor novo de
+  // `transitionKind` — "wipeup" & cia. —, o app antigo DESCARTARIA o valor
+  // desconhecido logo acima e o wipe do usuário viraria um dissolve: mudança que
+  // se vê no vídeo exportado. Foi o que decidiu o formato — ver `TransitionDir`
+  // em `timeline.ts`.) Valor desconhecido não entra: vira o `lr` padrão.
+  if (c.transitionDir === "lr" || c.transitionDir === "rl" || c.transitionDir === "tb" || c.transitionDir === "bt") {
+    base.transitionDir = c.transitionDir;
+  }
   return base;
 }
 

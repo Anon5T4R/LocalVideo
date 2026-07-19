@@ -3,6 +3,7 @@ import {
   audioTrackAt,
   FALLBACK_FPS,
   effectiveFps,
+  formatDelta,
   formatDuration,
   formatSize,
   formatTimecode,
@@ -188,6 +189,16 @@ describe("tempo legível", () => {
     expect(formatDuration(64300)).toBe("1:04.3");
     expect(formatDuration(3723500)).toBe("1:02:03.5");
     expect(formatDuration(-10)).toBe("0:00.0");
+  });
+
+  it("formatDelta diz o SINAL antes do número (v0.9.2)", () => {
+    // O sinal é a informação principal do arrasto: "0:00.5" sozinho não diz se
+    // o clipe andou pra frente ou pra trás.
+    expect(formatDelta(500)).toBe("+0:00.5");
+    expect(formatDelta(-1200)).toBe("−0:01.2"); // U+2212, não hífen
+    expect(formatDelta(0)).toBe("0:00.0"); // "não mexeu" não é nem mais nem menos
+    expect(formatDelta(-0.4)).toBe("0:00.0"); // arredonda ANTES de decidir o sinal
+    expect(formatDelta(3723500)).toBe("+1:02:03.5");
   });
 
   it("formatTimecode conta QUADRO, como todo NLE", () => {

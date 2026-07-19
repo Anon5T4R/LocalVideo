@@ -68,6 +68,7 @@ pub fn run() {
             media::probe,
             media::probe_keyframes,
             media::thumbs,
+            media::audio_peaks,
             media::allow_media,
             media::extract_text,
             project::project_save,

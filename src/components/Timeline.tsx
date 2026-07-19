@@ -3,13 +3,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../lib/i18n";
 import Icon from "./Icon";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
-import { audioTrackAt, formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
+import { audioTrackAt, formatDelta, formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
 import type { MediaInfo } from "../lib/probe";
+import { peakColumns, waveformPath } from "../lib/peaks";
 import { anchoredScrollLeft, snapMove, snapValue } from "../lib/snap";
 import {
   canRemoveTrack,
   clipDuration,
   clipEnd,
+  clipSpeed,
   isMedia,
   isTitle,
   locate,
@@ -18,15 +20,45 @@ import {
   type Clip,
   type Timeline,
   type Track,
+  type TrackKind,
 } from "../lib/timeline";
-import { baseName, useEditor } from "../state/editor";
+import { baseName, peakKey, useEditor } from "../state/editor";
 import { useUi } from "../state/ui";
 
 /** Passos de régua "redondos" (ms) — a escala tem que ser de relógio. */
 const TICK_STEPS = [200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 300_000, 600_000];
 const MIN_TICK_PX = 64;
 const THUMB_W = 90;
-const LANE_H = 60;
+
+/**
+ * Altura da lane POR TIPO (v0.9.2). Antes eram 60px pra todo mundo — o que
+ * sobrava numa trilha de áudio (uma barra com um rótulo) faltava numa de vídeo
+ * (miniatura espremida), e oito trilhas comiam a tela à toa. É a proporção que
+ * todo NLE usa: vídeo mais alto porque tem imagem pra mostrar; áudio mais baixo
+ * porque a onda se lê bem em pouca altura.
+ *
+ * Constante daqui E do cabeçalho da trilha ao mesmo tempo: as duas colunas
+ * (`tl-heads` e as lanes) têm que bater linha a linha, senão o V2 aponta pra
+ * trilha do A1.
+ */
+const LANE_H_VIDEO = 64;
+/** 52 e não 44: medido no app, um clipe de áudio de 44px dá 31px de corpo, e o
+ *  rótulo (19px) comia DOIS TERÇOS da onda — sobrava 10px de forma de onda
+ *  legível, que é menos do que a fatia inteira se propôs a entregar. Com 52 o
+ *  rótulo vira um chip curto no topo (ver `.tl-lane.audio .tl-clip-label`) e a
+ *  onda fica com o corpo inteiro. */
+const LANE_H_AUDIO = 52;
+function laneHeight(kind: TrackKind): number {
+  return kind === "audio" ? LANE_H_AUDIO : LANE_H_VIDEO;
+}
+
+/** Largura de uma coluna da forma de onda, em px de tela. 2px é o ponto em que a
+ *  onda ainda tem desenho (não vira um bloco) sem pedir mil colunas por clipe. */
+const WAVE_COL_PX = 2;
+/** Altura do espaço-tempo do `<svg>` da onda. Número ARBITRÁRIO de propósito: o
+ *  `preserveAspectRatio="none"` estica o desenho pra caixa real do clipe, então
+ *  esta é a resolução vertical do caminho, não pixels de tela. */
+const WAVE_H = 100;
 /** Largura da coluna de cabeçalhos (V1/A1 + botões). Constante daqui e do CSS ao
  *  mesmo tempo: é ela que o `fit()` desconta da largura útil da régua. */
 const HEAD_W = 116;
@@ -75,6 +107,7 @@ function snapTargets(tl: Timeline, exceptId: string, playhead: number): number[]
 export default function Timeline() {
   const timeline = useEditor((s) => s.history.present);
   const thumbs = useEditor((s) => s.thumbs);
+  const peaks = useEditor((s) => s.peaks);
   const missing = useEditor((s) => s.missing);
   const media = useEditor((s) => s.media);
   const playhead = useEditor((s) => s.playhead);
@@ -97,6 +130,7 @@ export default function Timeline() {
   const doRemoveTrack = useEditor((s) => s.doRemoveTrack);
   const doMoveTrack = useEditor((s) => s.doMoveTrack);
   const setConfirmOpen = useUi((s) => s.setConfirmOpen);
+  const setHelpOpen = useUi((s) => s.setHelpOpen);
   const doDetachAudio = useEditor((s) => s.doDetachAudio);
   const doDuplicate = useEditor((s) => s.doDuplicate);
   const doUpdateClip = useEditor((s) => s.doUpdateClip);
@@ -124,6 +158,21 @@ export default function Timeline() {
   /** A marca (ms) onde o arrasto encaixou agora — pra desenhar a guia. `null` =
    *  não encaixou (ou não há arrasto). */
   const [snapLine, setSnapLine] = useState<number | null>(null);
+  /**
+   * O NÚMERO do arrasto em curso: onde a borda está agora e quanto ela andou.
+   *
+   * Fecha metade da pendência A5 do ESTADO. Até aqui os arrastos eram cegos: dá
+   * pra sentir que o clipe andou, mas não pra saber SE andou meio segundo ou dois
+   * — e a régua só tem marca a cada N segundos. Quem apara pra casar com uma
+   * batida ou com o fim de uma frase precisa do número, não da sensação.
+   *
+   * Vive em estado do componente (e não no store) de propósito: é rastro do
+   * gesto, some ao soltar e não é estado do projeto — no store entraria no
+   * caminho de re-render de todo mundo por nada.
+   */
+  const [dragTip, setDragTip] = useState<{ x: number; y: number; at: string; delta: string } | null>(
+    null,
+  );
 
   const total = useMemo(() => timelineDuration(timeline), [timeline]);
   const msToPx = (ms: number) => (ms / 1000) * pxPerSec;
@@ -179,6 +228,24 @@ export default function Timeline() {
       const s = useEditor.getState();
       const targets = snapTargets(s.history.present, d.id, s.playhead);
 
+      // O número que a etiqueta mostra, por tipo de arrasto: ONDE a borda está
+      // agora e QUANTO ela andou desde o começo do gesto. O `y` vem do ponteiro
+      // pra a etiqueta seguir o dedo entre trilhas; o `x` vem do valor JÁ
+      // encaixado (senão ela mentiria por alguns pixels sempre que o snap
+      // grudasse numa marca).
+      const tip = (valueMs: number, deltaMs: number) => {
+        const el = innerRef.current;
+        if (!el) return;
+        // Coordenadas do `tl-inner` (é lá que a etiqueta é desenhada, junto com
+        // o playhead e a snapline): x sai do ms, y sai do ponteiro.
+        setDragTip({
+          x: msToPx(valueMs),
+          y: e.clientY - el.getBoundingClientRect().top,
+          at: formatDuration(valueMs),
+          delta: formatDelta(deltaMs),
+        });
+      };
+
       if (d.kind === "move") {
         // Trilha de destino = a lane sob o dedo (senão, a de origem).
         let toTrack = d.trackId;
@@ -190,23 +257,32 @@ export default function Timeline() {
         const snap = snapMove(raw, d.dur0, targets, tol);
         setSnapLine(snap.guide);
         doMoveClip(d.id, toTrack, snap.startMs);
+        tip(snap.startMs, snap.startMs - d.start0);
       } else if (d.kind === "in") {
         const snap = snapValue(d.start0 + delta, targets, tol);
         setSnapLine(snap.target);
         doTrimEdge(d.id, "in", snap.value);
+        tip(snap.value, snap.value - d.start0);
       } else if (d.kind === "out") {
         const snap = snapValue(d.end0 + delta, targets, tol);
         setSnapLine(snap.target);
         doTrimEdge(d.id, "out", snap.value);
+        tip(snap.value, snap.value - d.end0);
       } else if (d.kind === "trans") {
         // Arrastar a alça pra ESQUERDA aumenta a sobreposição (transição).
         doSetTransition(d.id, d.trans0 - delta);
+        // Aqui o número é a DURAÇÃO da transição (não uma posição na régua): é
+        // o que a pessoa está ajustando, e é ele que o inspetor mostra.
+        const loc = locate(useEditor.getState().history.present, d.id);
+        const ov = loc ? overlapWithNext(loc.track, loc.ci) : 0;
+        tip(loc ? clipEnd(loc.clip) - ov : 0, ov - d.trans0);
       }
     };
     const onUp = () => {
       dragRef.current = null;
       setDragging(false);
       setSnapLine(null);
+      setDragTip(null);
       useEditor.getState().endEdit();
     };
     window.addEventListener("pointermove", onMove);
@@ -360,7 +436,8 @@ export default function Timeline() {
     <div className="tl">
       <div className="tl-head">
         <strong>{t("tl.title")}</strong>
-        <span className="muted small">{t("tl.stats", { n: clipCount, dur: formatDuration(total) })}</span>
+        {/* (A contagem de clipes saiu daqui na v0.9.2: ela agora vive na
+            statusbar única lá embaixo, junto do playhead — ver `tl-status`.) */}
         <span className="toolbar-fill" />
         <button onClick={doSplit} title={`${t("tl.split")} (S)`} disabled={clipCount === 0}>
           <Icon name="split" /> {t("tl.split")}
@@ -472,7 +549,7 @@ export default function Timeline() {
               <div
                 key={track.id}
                 className={`tl-lane ${track.kind}${track.muted ? " muted-track" : ""}`}
-                style={{ height: LANE_H }}
+                style={{ height: laneHeight(track.kind) }}
                 ref={(el) => {
                   if (el) laneRefs.current.set(track.id, el);
                   else laneRefs.current.delete(track.id);
@@ -492,6 +569,15 @@ export default function Timeline() {
                     gone={c.path ? missing.includes(c.path) : false}
                     strip={c.path ? thumbs[c.path] : undefined}
                     hasInfo={c.path ? !!media[c.path] : false}
+                    // A onda só é buscada pra clipe em trilha de ÁUDIO: numa de
+                    // vídeo quem conta a história é a miniatura, e desenhar as
+                    // duas coisas na mesma caixa não deixa ler nenhuma.
+                    wave={
+                      track.kind === "audio" && c.path
+                        ? peaks[peakKey(c.path, c.audioStreamIndex ?? 0)]
+                        : undefined
+                    }
+                    fileDurationMs={c.path ? (media[c.path]?.durationMs ?? 0) : 0}
                     srcTrackName={sourceTrackName(track, c)}
                     onSelect={() => select(c.id)}
                     onBodyDown={(e) =>
@@ -540,6 +626,16 @@ export default function Timeline() {
               <div className="tl-snapline" style={{ left: msToPx(snapLine) }} />
             ) : null}
 
+            {/* A etiqueta numérica do arrasto (v0.9.2): onde a borda está e
+                quanto ela andou. Fica presa ao ponto do gesto, não a um canto
+                da tela — o olho já está ali. */}
+            {dragging && dragTip ? (
+              <div className="dragtip tl-dragtip" style={{ left: dragTip.x, top: dragTip.y }}>
+                <b className="tabnum">{dragTip.at}</b>
+                <em className="tabnum">{dragTip.delta}</em>
+              </div>
+            ) : null}
+
             {/* playhead por cima de tudo */}
             <div className="tl-playhead" style={{ left: msToPx(playhead) }}>
               <i />
@@ -548,7 +644,28 @@ export default function Timeline() {
         </div>
       </div>
 
-      <div className="tl-foot muted small">{clipCount > 0 ? t("tl.dragHint2") : t("empty.tip")}</div>
+      {/* A STATUSBAR única (v0.9.2). Antes eram duas linhas permanentes de dica
+          — o rodapé da timeline E o `dragHint` do inspetor —, cada uma repetindo
+          uma parte da verdade e nenhuma dizendo onde o playhead está. Agora é
+          uma faixa só: dica contextual à esquerda, números à direita. */}
+      <div className="tl-status muted small">
+        <span className="tl-status-hint">
+          {dragTip
+            ? `${dragTip.at} · ${dragTip.delta}`
+            : selectedId
+              ? t("clip.dragHint", { at: formatDuration(playhead) })
+              : clipCount > 0
+                ? t("tl.dragHint2")
+                : t("empty.tip")}
+        </span>
+        <span className="toolbar-fill" />
+        <span className="tabnum">{t("st.playhead", { at: formatDuration(playhead) })}</span>
+        <span aria-hidden>·</span>
+        <span className="tabnum">{t("tl.stats", { n: clipCount, dur: formatDuration(total) })}</span>
+        <button className="mini" onClick={() => setHelpOpen(true)} title={t("help.title")}>
+          ?
+        </button>
+      </div>
 
       {menu ? (
         <ContextMenu
@@ -617,7 +734,10 @@ function TrackHead(p: {
 }) {
   const muted = !!p.track.muted;
   return (
-    <div className={`tl-head-row ${p.track.kind}${muted ? " muted-track" : ""}`} style={{ height: LANE_H }}>
+    <div
+      className={`tl-head-row ${p.track.kind}${muted ? " muted-track" : ""}`}
+      style={{ height: laneHeight(p.track.kind) }}
+    >
       <span className="tl-head-name" title={p.hint}>
         <Icon name={p.track.kind === "video" ? "addVideo" : "addAudio"} />
         <em>{p.label}</em>
@@ -719,6 +839,11 @@ interface ClipViewProps {
   gone: boolean;
   strip: { timesMs: number[]; urls: string[] } | undefined;
   hasInfo: boolean;
+  /** Picos (0..1) do ARQUIVO inteiro da faixa deste clipe; `undefined` enquanto
+   *  a extração não voltou (ou em trilha de vídeo, que não desenha onda). */
+  wave?: number[];
+  /** Duração do arquivo-fonte — é a escala em que os picos foram amostrados. */
+  fileDurationMs: number;
   /** Nome da faixa-fonte (clipe de áudio destacado de arquivo multi-faixa). */
   srcTrackName?: string;
   onSelect: () => void;
@@ -748,6 +873,27 @@ function ClipView(p: ClipViewProps) {
 
   const slots = Math.max(1, Math.round(w / THUMB_W));
 
+  /**
+   * A forma de onda deste clipe (v0.9.2).
+   *
+   * Derivada NO RENDER, não guardada em estado: o desenho depende de três coisas
+   * que mudam o tempo todo (a largura, que é o zoom; o `srcIn`, que é o aparar;
+   * e a velocidade) e um estado espelhando isso ficaria velho no meio de um
+   * arrasto — a onda "andaria atrasada" em relação à borda que o dedo puxa. As
+   * duas funções são puras e testadas (`lib/peaks.ts`), então recalcular é
+   * barato: um `max` por coluna sobre um vetor de 2000.
+   *
+   * `srcSpan` = duração × velocidade é a MESMA invariante do compilador
+   * (`lib/args.ts`): um clipe a 2× consome o dobro de fonte, e a onda espreme
+   * junto — senão a régua mostraria uma onda que não é a que sai no arquivo.
+   */
+  const wavePath = (() => {
+    if (!p.wave || p.wave.length === 0 || p.fileDurationMs <= 0 || w < 4) return "";
+    const cols = Math.max(4, Math.round(w / WAVE_COL_PX));
+    const srcSpan = clipDuration(c) * clipSpeed(c);
+    return waveformPath(peakColumns(p.wave, p.fileDurationMs, c.srcIn ?? 0, srcSpan, cols), w, WAVE_H);
+  })();
+
   return (
     <div
       className={cls}
@@ -766,7 +912,21 @@ function ClipView(p: ClipViewProps) {
             : baseName(c.path ?? "")
       }
     >
-      {isMedia(c) ? (
+      {isMedia(c) && track.kind === "audio" ? (
+        // Clipe de áudio: a ONDA, não as miniaturas do vídeo de onde ele saiu.
+        // (Até a v0.9 a lane de áudio desenhava as mesmas thumbs da de vídeo —
+        // imagem que não diz nada sobre o som e ainda cobria o rótulo da faixa.)
+        // O `viewBox` é o w×h do próprio clipe e o `preserveAspectRatio` fica
+        // desligado: assim a onda estica com a caixa sem redesenhar o caminho
+        // quando só a ALTURA muda.
+        <div className="tl-wave" aria-hidden>
+          {wavePath ? (
+            <svg viewBox={`0 0 ${w} ${WAVE_H}`} preserveAspectRatio="none">
+              <path d={wavePath} />
+            </svg>
+          ) : null}
+        </div>
+      ) : isMedia(c) ? (
         <div className="tl-thumbs" aria-hidden>
           {p.strip && p.strip.urls.length > 0
             ? Array.from({ length: slots }, (_, k) => {
@@ -786,7 +946,15 @@ function ClipView(p: ClipViewProps) {
         <span>{isTitle(c) ? `“${c.title!.text}”` : baseName(c.path ?? "")}</span>
         {p.srcTrackName ? <span className="tl-srctrack">{p.srcTrackName}</span> : null}
         <span className="muted">{formatDuration(clipDuration(c))}</span>
-        {isMedia(c) && p.hasInfo && !p.strip ? <span className="muted">· {t("tl.noThumbs")}</span> : null}
+        {/* O aviso de "ainda não extraí" é o da MÍDIA que esta lane desenha:
+            miniatura em trilha de vídeo, forma de onda em trilha de áudio.
+            Dizer "sem miniaturas" num clipe de áudio (o que acontecia antes)
+            aponta pra uma coisa que aquela lane nem mostra. */}
+        {isMedia(c) && p.hasInfo && track.kind === "audio" && !p.wave ? (
+          <span className="muted">· {t("tl.noWave")}</span>
+        ) : isMedia(c) && p.hasInfo && track.kind !== "audio" && !p.strip ? (
+          <span className="muted">· {t("tl.noThumbs")}</span>
+        ) : null}
       </div>
 
       {/* alça de aparar início */}

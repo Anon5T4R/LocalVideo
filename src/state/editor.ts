@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { t } from "../lib/i18n";
 import { applyMarkers, MarkerParseError, parseMarkers } from "../lib/markers";
 import { parseSubtitles, subtitleExtractArgs } from "../lib/subtitles";
+import { audioPeaksArgs, expectedSamples, PEAKS_PER_FILE } from "../lib/peaks";
 import { thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
 import { parseProject, ProjectParseError, serializeProject } from "../lib/project";
 import {
@@ -59,6 +60,19 @@ export interface ThumbStrip {
  *  história do vídeo sem o import virar uma espera. */
 const THUMBS_PER_FILE = 16;
 
+/**
+ * A chave do mapa de ondas: um arquivo tem uma onda POR FAIXA de áudio.
+ *
+ * O ordinal é o mesmo espaço de índice do `Clip.audioStreamIndex` (o `a:N` do
+ * ffmpeg), não o `AudioTrackInfo.index` do container — ver `audioTrackAt` em
+ * `lib/probe.ts` pro histórico de quando a UI misturou os dois. Aqui o erro
+ * seria mudo e visual: o clipe do microfone desenharia a onda do áudio do
+ * sistema, e nada na tela denunciaria a troca.
+ */
+export function peakKey(path: string, ordinal: number): string {
+  return `${path}#${Math.max(0, Math.round(ordinal))}`;
+}
+
 /** Duração padrão de um título novo, em ms. */
 const TITLE_DEFAULT_MS = 3000;
 
@@ -76,6 +90,17 @@ interface EditorState {
   history: History<Timeline>;
   media: Record<string, MediaInfo>;
   thumbs: Record<string, ThumbStrip>;
+  /**
+   * A forma de onda de cada FAIXA de áudio já extraída, por `peakKey`. Os
+   * valores são 0..1 e cobrem o arquivo inteiro, uniformemente — quem recorta
+   * pro trecho do clipe (trim + velocidade + zoom) é o `peakColumns`.
+   *
+   * Cache de SESSÃO, como as miniaturas: nasce vazio a cada projeto e se enche
+   * em segundo plano. Não vai pro `.tvproj` (é derivado do arquivo) nem pro
+   * disco — reextrair custa segundos e some com uma classe inteira de bug
+   * (cache velho de um arquivo que o usuário regravou por cima).
+   */
+  peaks: Record<string, number[]>;
   /** Arquivos que o projeto cita mas sumiram do disco. */
   missing: string[];
 
@@ -222,6 +247,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   history: initHistory<Timeline>(newTimeline()),
   media: {},
   thumbs: {},
+  peaks: {},
   missing: [],
   selectedId: null,
   playhead: 0,
@@ -286,6 +312,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         });
 
         void loadThumbs(path, info.durationMs);
+        void loadPeaks(path, info);
       }
       reportImportFailures(failures);
     } finally {
@@ -585,6 +612,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       history: initHistory<Timeline>(newTimeline()),
       media: {},
       thumbs: {},
+      peaks: {},
       missing: [],
       selectedId: null,
       playhead: 0,
@@ -638,6 +666,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       history: initHistory(doc.timeline),
       media,
       thumbs: {},
+      peaks: {},
       missing,
       selectedId: null,
       playhead: 0,
@@ -649,6 +678,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     for (const p of paths) {
       if (missing.includes(p)) continue;
       void loadThumbs(p, media[p]?.durationMs ?? 0);
+      const info = media[p];
+      if (info) void loadPeaks(p, info);
     }
     if (missing.length > 0) {
       useUi.getState().pushToast("error", t("proj.missingMedia", { n: missing.length }));
@@ -700,6 +731,50 @@ async function loadThumbs(path: string, durationMs: number) {
     }));
   } catch {
     // Régua sem miniatura ainda edita — não vale um toast por isso.
+  }
+}
+
+/**
+ * Extrações de onda em VOO — sem isto, abrir um projeto que usa o mesmo arquivo
+ * em cinco clipes dispararia cinco ffmpeg iguais em paralelo (o cheque no
+ * `peaks[key]` não pega nada enquanto a primeira ainda não voltou). É o mesmo
+ * cuidado que o `loadThumbs` consegue de graça por ser um por arquivo.
+ */
+const peaksInFlight = new Set<string>();
+
+/**
+ * Extrai a forma de onda de TODAS as faixas de áudio de um arquivo, em segundo
+ * plano — o mesmo padrão das miniaturas, e pelo mesmo motivo: **o import não
+ * pode ficar mais lento**. Quem chama faz `void loadPeaks(...)` e segue; o clipe
+ * já está na régua e a onda chega quando chegar.
+ *
+ * Todas as faixas, e não só a 0, porque o gesto que revela a onda é "separar
+ * áudio" num take do LocalRecord (microfone + áudio do sistema): extrair só a
+ * primeira deixaria o segundo clipe vazio justo no caso que motivou a fatia.
+ * Uma faixa que ninguém destacar custou um ffmpeg de segundo plano — barato
+ * perto de a onda aparecer só depois do clique.
+ */
+async function loadPeaks(path: string, info: MediaInfo) {
+  if (info.durationMs <= 0) return;
+  for (let ordinal = 0; ordinal < info.audioTracks.length; ordinal++) {
+    const key = peakKey(path, ordinal);
+    if (useEditor.getState().peaks[key] || peaksInFlight.has(key)) continue;
+    peaksInFlight.add(key);
+    try {
+      // O Rust devolve 0..255 (byte por balde, JSON 4× menor); a UI pensa em
+      // 0..1, então a conversão morre aqui e não em cada render da régua.
+      const raw = await invoke<number[]>("audio_peaks", {
+        args: audioPeaksArgs(path, ordinal),
+        buckets: PEAKS_PER_FILE,
+        expectedSamples: expectedSamples(info.durationMs),
+      });
+      const peaks = raw.map((v) => v / 255);
+      useEditor.setState((s) => ({ peaks: { ...s.peaks, [key]: peaks } }));
+    } catch {
+      // Régua sem onda ainda edita — não vale um toast por isso (idem thumbs).
+    } finally {
+      peaksInFlight.delete(key);
+    }
   }
 }
 

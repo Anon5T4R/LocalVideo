@@ -521,7 +521,9 @@ import {
   type ColorAdjust,
   type CropRect,
   type Keyframe,
+  transitionDir,
   type Timeline,
+  type TransitionDir,
   type TransitionKind,
 } from "./timeline";
 
@@ -681,24 +683,82 @@ function alphaEnvelopeGeq(env: Keyframe[], durSec: number): string {
 }
 
 /**
- * O `geq` da transição WIPE (v0.4.1): uma cortina revela o clipe que entra, da
- * esquerda pra direita, ao longo de `durSec` segundos.
+ * A CONDIÇÃO de "este pixel já foi revelado" no instante T, por direção.
+ *
+ * A fronteira anda com o tempo: em `T/d` da transição ela cruzou essa fração da
+ * tela. O que muda por direção é qual lado já está visível — e é só isso,
+ * mesmo: as quatro são a mesma conta com o eixo (X/W ou Y/H) e o sentido
+ * trocados. Pura e testada porque vai CRUA pro filtergraph, onde um erro de
+ * sinal não dá erro nenhum: sai um vídeo com a cortina ao contrário.
+ */
+function wipeVisibleExpr(dir: TransitionDir, d: string): string {
+  switch (dir) {
+    // Varre PRA direita: já está visível quem está à esquerda da fronteira.
+    case "lr":
+      return `gte(W*T/${d}\\,X)`;
+    // Pra esquerda: a fronteira vem de W e desce; visível quem está à direita.
+    case "rl":
+      return `gte(X\\,W-W*T/${d})`;
+    // Pra baixo: mesmo raciocínio no eixo Y (H no lugar de W).
+    case "tb":
+      return `gte(H*T/${d}\\,Y)`;
+    case "bt":
+      return `gte(Y\\,H-H*T/${d})`;
+  }
+}
+
+/**
+ * O `geq` da transição WIPE (v0.4.1; direções na v0.9.2): uma cortina revela o
+ * clipe que entra ao longo de `durSec` segundos.
  *
  * A mesma técnica do envelope de opacidade — pintar o canal alfa e deixar a cor
  * intacta — só que a máscara é ESPACIAL: no instante T (tempo local do clipe,
- * antes do deslocamento pro startMs), a fronteira está em `X = W·T/d`. O pixel é
- * visível se está à esquerda dela (`gte(W*T/d, X)` → 1) e invisível à direita
- * (→ 0). Depois de `d`, tudo visível. Multiplica `alpha(X,Y)` (não SETA) pra
- * respeitar uma opacidade constante aplicada antes (colorchannelmixer).
- * Não precisa de `xfade`: a sobreposição continua sendo a transição — só o
- * jeito de entrar muda.
+ * antes do deslocamento pro startMs), a fronteira está numa fração `T/d` da
+ * tela, e o pixel é visível conforme o lado (ver `wipeVisibleExpr`). Depois de
+ * `d`, tudo visível. Multiplica `alpha(X,Y)` (não SETA) pra respeitar uma
+ * opacidade constante aplicada antes (colorchannelmixer). Não precisa de
+ * `xfade`: a sobreposição continua sendo a transição — só o jeito de entrar
+ * muda.
  */
-function wipeAlphaGeq(durSec: number): string {
+export function wipeAlphaGeq(durSec: number, dir: TransitionDir = "lr"): string {
   const d = Math.max(0.001, durSec).toFixed(3);
   return (
     `geq=lum='lum(X\\,Y)':cb='cb(X\\,Y)':cr='cr(X\\,Y)':` +
-    `a='alpha(X\\,Y)*if(lt(T\\,${d})\\,gte(W*T/${d}\\,X)\\,1)'`
+    `a='alpha(X\\,Y)*if(lt(T\\,${d})\\,${wipeVisibleExpr(dir, d)}\\,1)'`
   );
+}
+
+/**
+ * O `x`/`y` do overlay durante um SLIDE: o clipe que entra vem de fora da tela e
+ * crava no lugar quando a sobreposição acaba.
+ *
+ * O `min`/`max` é o que CRAVA: passado o tempo `d`, a expressão continua sendo
+ * avaliada a cada quadro (o overlay reavalia sempre) e sem o grampo o clipe
+ * continuaria andando pra fora do outro lado. Qual dos dois depende do sentido —
+ * quem entra da esquerda vem de valores negativos e sobe até 0 (`min`); quem
+ * entra da direita desce de +W até 0 (`max`).
+ *
+ * `s` é o começo do clipe na TIMELINE (o fluxo já foi deslocado pro `startMs`) e
+ * `t` é o tempo da timeline. As aspas simples protegem as vírgulas do parser de
+ * opções, como no `enable`.
+ */
+export function slideOverlayXY(
+  dir: TransitionDir,
+  s: string,
+  durSec: string,
+  ox: number,
+  oy: number,
+): { x: string; y: string } {
+  switch (dir) {
+    case "lr":
+      return { x: `'min(0,-W+(t-${s})*W/${durSec})'`, y: String(oy) };
+    case "rl":
+      return { x: `'max(0,W-(t-${s})*W/${durSec})'`, y: String(oy) };
+    case "tb":
+      return { x: String(ox), y: `'min(0,-H+(t-${s})*H/${durSec})'` };
+    case "bt":
+      return { x: String(ox), y: `'max(0,H-(t-${s})*H/${durSec})'` };
+  }
 }
 
 /**
@@ -903,6 +963,10 @@ export function filterComplexArgs(
           const prev = prevClip && prevClip.path !== undefined ? overlapMs(prevClip, c) : 0;
           const kind: TransitionKind =
             prev > 0 && !pip ? (prevClip?.transitionKind ?? "dissolve") : "dissolve";
+          // A direção mora no MESMO clipe que o tipo (o de trás): os dois
+          // descrevem a mesma transição, e separá-los faria a alça da régua
+          // apontar pra dois lugares.
+          const dir: TransitionDir = prevClip ? transitionDir(prevClip) : "lr";
           const slide = prev > 0 && !pip && kind === "slide";
           const op = c.opacity ?? 1;
           const env = c.opacityKeyframes;
@@ -914,7 +978,7 @@ export function filterComplexArgs(
             if (hasEnv) vf.push(alphaEnvelopeGeq(env!, c.durationMs / 1000));
             else if (op < 1) vf.push(`colorchannelmixer=aa=${op}`);
             if (prev > 0 && !slide) {
-              if (kind === "wipe") vf.push(wipeAlphaGeq(prev / 1000));
+              if (kind === "wipe") vf.push(wipeAlphaGeq(prev / 1000, dir));
               else vf.push(`fade=t=in:st=0:d=${secs(prev)}:alpha=1`);
             }
           }
@@ -923,15 +987,15 @@ export function filterComplexArgs(
 
           const ox = pip ? Math.round(pip.x * w) : 0;
           const oy = pip ? Math.round(pip.y * h) : 0;
-          // Slide: o x do overlay ANDA durante a sobreposição — o clipe entra da
-          // esquerda (−W → 0) e crava em 0 dali em diante (o min segura). O `t`
-          // aqui é o tempo da TIMELINE (o fluxo já foi deslocado pro startMs); o
-          // overlay reavalia x a cada frame por padrão. Aspas simples protegem
-          // as vírgulas do parser de opções, como no enable.
-          const oxExpr = slide ? `'min(0,-W+(t-${s})*W/${secs(prev)})'` : String(ox);
+          // Slide: a POSIÇÃO do overlay anda durante a sobreposição — o clipe
+          // entra de fora da tela pelo lado da direção e crava no lugar dali em
+          // diante (ver `slideOverlayXY`).
+          const pos = slide
+            ? slideOverlayXY(dir, s, secs(prev), ox, oy)
+            : { x: String(ox), y: String(oy) };
           parts.push(`[${idx}:v]${vf.join(",")}[v${k}]`);
           parts.push(
-            `${acc}[v${k}]overlay=x=${oxExpr}:y=${oy}:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
+            `${acc}[v${k}]overlay=x=${pos.x}:y=${pos.y}:eof_action=pass:enable='between(t,${s},${e})'[vacc${k}]`,
           );
           acc = `[vacc${k}]`;
           k++;

@@ -1,6 +1,6 @@
 [package]
 name = "localvideo"
-version = "0.9.1"
+version = "0.10.0"
 description = "LocalVideo — editor de vídeo 100% offline da suíte Local"
 authors = ["Taylor"]
 edition = "2021"

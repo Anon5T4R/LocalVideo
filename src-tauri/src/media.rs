@@ -5,6 +5,7 @@
 //! teste) — aqui a gente só recebe a lista de instantes e executa. Idem pro fps:
 //! devolvemos a fração crua do ffprobe (`30000/1001`) e a conversão é do front.
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 
 use serde::Serialize;
@@ -402,6 +403,171 @@ pub fn thumbs(
     Ok(out_paths)
 }
 
+/// Tamanho do pedaço lido do stdout do ffmpeg, em bytes.
+///
+/// **É ele que define a memória desta extração** — e é o número que faz a
+/// diferença entre isto e a versão ingênua. 1 h de áudio 48 kHz estéreo 16 bits
+/// são ~660 MB de PCM cru; carregar isso pra "olhar as amostras" derrubaria o
+/// app. Aqui nada disso existe ao mesmo tempo na memória: o ffmpeg já entrega
+/// mono downsampleado (ver `audioPeaksArgs`), a gente lê 64 KiB por vez e o que
+/// SOBRA é só o vetor de baldes (2000 bytes). Memória constante, arquivo de
+/// qualquer tamanho.
+const PEAK_CHUNK: usize = 64 * 1024;
+
+/// Teto de baldes: o `buckets` vem do front e vira alocação aqui.
+const PEAK_MAX_BUCKETS: usize = 8000;
+
+/// O acumulador de picos: recebe amostra por amostra e guarda só o MÁXIMO de
+/// cada balde.
+///
+/// Separado do processo de propósito — assim os testes do cargo exercitam a
+/// conta (que é onde mora o risco de errar por um: balde fora do fim, fluxo mais
+/// curto/mais longo que o esperado) sem precisar de ffmpeg de verdade.
+struct Peaks {
+    /// Pico de cada balde, 0..=255 (o front divide por 255).
+    ///
+    /// `u8` e não `f32`: a onda vira pixel: 255 níveis já são mais do que a
+    /// altura de qualquer clipe na régua, e o JSON que atravessa a ponte fica 4×
+    /// menor (2 KB por faixa em vez de 8+).
+    buckets: Vec<u8>,
+    /// Quantas amostras cabem em cada balde (≥ 1).
+    per_bucket: u64,
+    /// Índice da amostra atual no fluxo.
+    at: u64,
+}
+
+impl Peaks {
+    /// `expected` é o total de amostras que o probe faz esperar (ver
+    /// `expectedSamples` no front). Vale como ESTIMATIVA: um fluxo mais curto
+    /// deixa os últimos baldes em zero (silêncio no fim, honesto) e um mais
+    /// longo entope o último — nos dois casos a onda continua alinhada ao tempo,
+    /// que é o que serve pra achar a fala.
+    fn new(buckets: usize, expected: u64) -> Self {
+        let n = buckets.clamp(1, PEAK_MAX_BUCKETS);
+        Peaks {
+            buckets: vec![0u8; n],
+            per_bucket: (expected.max(1) as f64 / n as f64).ceil().max(1.0) as u64,
+            at: 0,
+        }
+    }
+
+    fn push(&mut self, sample: i16) {
+        let i = (self.at / self.per_bucket) as usize;
+        self.at += 1;
+        // Passou do último balde (fluxo maior que o esperado): tudo cai no
+        // último, em vez de crescer o vetor ou entrar em pânico.
+        let i = i.min(self.buckets.len() - 1);
+        // `unsigned_abs` e não `abs`: `i16::MIN.abs()` estoura (overflow) — é o
+        // caso real de uma amostra no fundo da escala, não uma hipótese.
+        // Divide por `i16::MAX` (32767) e não por 32768: com 32768 o pico
+        // POSITIVO máximo dá 254 e o negativo dá 255 — a mesma onda mostraria
+        // altura diferente conforme o lado em que a amostra bateu. O `.min` é
+        // quem segura o único que passa de 255 (o `i16::MIN`).
+        let v = (sample.unsigned_abs() as u32 * 255 / 32767).min(255) as u8;
+        if v > self.buckets[i] {
+            self.buckets[i] = v;
+        }
+    }
+
+    /// Consome um pedaço de PCM `s16le`. Devolve quantos bytes NÃO foram usados
+    /// (0 ou 1: um pedaço pode cortar uma amostra no meio) pra quem chama levar
+    /// o byte solto pro pedaço seguinte.
+    fn push_bytes(&mut self, buf: &[u8]) -> usize {
+        let pairs = buf.len() / 2;
+        for p in 0..pairs {
+            self.push(i16::from_le_bytes([buf[p * 2], buf[p * 2 + 1]]));
+        }
+        buf.len() - pairs * 2
+    }
+}
+
+/// Extrai a forma de onda de UMA faixa de áudio: o ffmpeg decodifica e reduz, o
+/// Rust lê o fluxo em pedaços e devolve `buckets` picos (0..=255).
+///
+/// Os args vêm do front (`audioPeaksArgs` em `src/lib/peaks.ts`, com teste) —
+/// regra da casa: o Rust resolve o binário e move bytes.
+///
+/// O stdout é lido em pedaços de propósito, e não com `output()`: o `output()`
+/// junta o fluxo INTEIRO num `Vec<u8>` antes de devolver, que é justamente o
+/// pico de memória que esta fatia existe pra não ter. E o stderr vai pro
+/// `null` porque a mensagem de erro do ffmpeg não fala com o usuário — quem
+/// fala é a UI, no idioma dela (aqui a onda só não aparece, e a régua edita
+/// igual).
+#[tauri::command(async)]
+pub fn audio_peaks(
+    app: tauri::AppHandle,
+    args: Vec<String>,
+    buckets: usize,
+    expected_samples: u64,
+) -> Result<Vec<u8>, String> {
+    let ffmpeg = resolve_bin(&app, FFMPEG_BIN).map_err(|_| "no-runtime".to_string())?;
+    peaks_with_bin(&ffmpeg, &args, buckets, expected_samples)
+}
+
+/// O miolo do `audio_peaks`, sem o Tauri no caminho — o comando só resolve o
+/// binário e delega pra cá.
+///
+/// Separado pra que a prova EMPÍRICA (tempo, memória e forma da onda contra um
+/// arquivo de verdade) possa rodar de fora do app, no
+/// `examples/smoke_peaks.rs`: os testes do cargo são puros de propósito (o CI não
+/// baixa 100 MB de ffmpeg por push), então quem exercita o binário é o example —
+/// mesmo padrão do `smoke_probe.rs`.
+pub fn peaks_with_bin(
+    ffmpeg: &std::path::Path,
+    args: &[String],
+    buckets: usize,
+    expected_samples: u64,
+) -> Result<Vec<u8>, String> {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+
+    let mut child = cmd.spawn().map_err(|_| "peaks-failed".to_string())?;
+    let mut out = child.stdout.take().ok_or("peaks-failed")?;
+
+    let mut peaks = Peaks::new(buckets, expected_samples);
+    let mut buf = vec![0u8; PEAK_CHUNK];
+    // O byte ímpar que sobrou do pedaço anterior. Sem isto, um pedaço que corta
+    // uma amostra no meio faria TODAS as amostras seguintes serem lidas com os
+    // bytes trocados — a onda viraria ruído, e só às vezes (depende de onde o
+    // pipe cortou), que é o tipo de bug que não se reproduz.
+    let mut carry: Option<u8> = None;
+    loop {
+        let n = match out.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        let rest = match carry.take() {
+            Some(b) => {
+                let mut joined = Vec::with_capacity(n + 1);
+                joined.push(b);
+                joined.extend_from_slice(&buf[..n]);
+                peaks.push_bytes(&joined)
+            }
+            None => peaks.push_bytes(&buf[..n]),
+        };
+        if rest == 1 {
+            carry = Some(buf[n - 1]);
+        }
+    }
+
+    // Drenar o pipe ANTES do wait (feito acima, no laço até o EOF) e só então
+    // esperar: na ordem inversa o ffmpeg travaria escrevendo num buffer cheio.
+    let status = child.wait().map_err(|_| "peaks-failed".to_string())?;
+    if !status.success() && peaks.at == 0 {
+        return Err("peaks-failed".into());
+    }
+    // Faixa que existe mas é 100% silêncio devolve tudo zero — e isso é um
+    // RESULTADO (a linha reta no meio do clipe diz "não tem sinal aqui", que é
+    // informação de verdade pra quem grava em duas faixas), não um erro.
+    Ok(peaks.buckets)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +733,79 @@ mod tests {
         assert_eq!(safe_id("clip-1_a"), "clip-1_a");
         assert_eq!(safe_id(""), "sem-id");
         assert_eq!(safe_id(&"x".repeat(200)).len(), 64);
+    }
+
+    /// Um pico por balde, e o pico é o MÁXIMO do trecho (nunca a média): é o
+    /// requisito visual da onda — uma sílaba curta no meio de um trecho quieto
+    /// tem que aparecer, senão a onda não serve pra achar onde a fala começa.
+    #[test]
+    fn picos_sao_o_maximo_de_cada_balde() {
+        let mut p = Peaks::new(4, 8); // 2 amostras por balde
+        for s in [100i16, 32767, 0, 0, -32768, 1, 3000, 6000] {
+            p.push(s);
+        }
+        // balde 0: max(100, 32767) → cheio; balde 1: silêncio; balde 2: o -32768
+        // (módulo) → cheio; balde 3: max(3000, 6000) → ~18% da altura.
+        assert_eq!(p.buckets[0], 255);
+        assert_eq!(p.buckets[1], 0);
+        assert_eq!(p.buckets[2], 255);
+        assert_eq!(p.buckets[3], 46);
+        // E o piso de quantização é conhecido: abaixo de ~129 (0,4% da escala) a
+        // amostra vira 0. É silêncio audível de qualquer jeito — o que importa é
+        // que a onda não tem degrau invisível na faixa que a pessoa enxerga.
+        let mut fraco = Peaks::new(1, 1);
+        fraco.push(60);
+        assert_eq!(fraco.buckets[0], 0);
+    }
+
+    /// `i16::MIN.abs()` estoura em Rust — e é uma amostra REAL (o fundo da
+    /// escala), não um caso de laboratório. Tem que virar pico cheio, não pânico.
+    #[test]
+    fn amostra_no_fundo_da_escala_nao_estoura() {
+        let mut p = Peaks::new(1, 1);
+        p.push(i16::MIN);
+        assert_eq!(p.buckets[0], 255);
+    }
+
+    /// O fluxo real nunca casa com a estimativa do container: mais curto deixa
+    /// zero no fim (silêncio honesto) e mais longo cai todo no último balde —
+    /// nenhum dos dois pode crescer o vetor nem sair do índice.
+    #[test]
+    fn fluxo_mais_curto_ou_mais_longo_que_o_esperado_nao_sai_do_vetor() {
+        let mut curto = Peaks::new(4, 100);
+        curto.push(32767);
+        assert_eq!(curto.buckets.len(), 4);
+        assert_eq!(curto.buckets[0], 255);
+        assert_eq!(&curto.buckets[1..], &[0, 0, 0]); // o resto é silêncio
+
+        let mut longo = Peaks::new(2, 2); // espera 2 amostras, recebe 10
+        for _ in 0..10 {
+            longo.push(1000);
+        }
+        assert_eq!(longo.buckets.len(), 2);
+        assert!(longo.buckets[1] > 0);
+    }
+
+    /// O pedaço do pipe corta uma amostra no meio: o byte solto tem que
+    /// atravessar pro pedaço seguinte. Sem isso todas as amostras dali em diante
+    /// saem com os bytes trocados — a onda vira ruído, e só às vezes.
+    #[test]
+    fn byte_impar_atravessa_o_pedaco() {
+        let mut p = Peaks::new(1, 2);
+        // 0x0000 e 0x7FFF (32767) em little-endian, partidos em 3 + 1 bytes.
+        let rest = p.push_bytes(&[0x00, 0x00, 0xFF]);
+        assert_eq!(rest, 1);
+        assert_eq!(p.buckets[0], 0); // só a amostra 0 entrou até aqui
+        let joined = [0xFFu8, 0x7F];
+        assert_eq!(p.push_bytes(&joined), 0);
+        assert_eq!(p.buckets[0], 255);
+    }
+
+    #[test]
+    fn buckets_sao_grampeados() {
+        assert_eq!(Peaks::new(0, 10).buckets.len(), 1);
+        assert_eq!(Peaks::new(999_999, 10).buckets.len(), PEAK_MAX_BUCKETS);
+        // Balde nunca é de zero amostra (divisão por zero no `push`).
+        assert!(Peaks::new(100, 0).per_bucket >= 1);
     }
 }

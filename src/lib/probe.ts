@@ -233,6 +233,23 @@ export function formatDuration(ms: number): string {
   return `${h > 0 ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}.${tenths}`;
 }
 
+/**
+ * `+0:00.5` / `−0:01.2` / `0:00.0` — o DELTA de um arrasto (v0.9.2).
+ *
+ * O sinal é a informação principal (ganhou ou perdeu tempo?), então ele vem
+ * primeiro e sempre: sem o `+` explícito, "0:00.5" não diz se o clipe andou pra
+ * frente ou pra trás. O menos é o SINAL tipográfico `−` (U+2212), não o hífen —
+ * é o mesmo que o fantasma do ripple já usa, e alinha na fonte tabular em vez de
+ * virar um risquinho meio pixel mais alto que o `+`.
+ *
+ * Zero não leva sinal: "não mexeu" não é nem mais nem menos.
+ */
+export function formatDelta(ms: number): string {
+  const r = Math.round(ms);
+  if (r === 0) return formatDuration(0);
+  return `${r > 0 ? "+" : "−"}${formatDuration(Math.abs(r))}`;
+}
+
 /** `00:01:02:14` — timecode com QUADRO (o playhead; é o que NLE mostra).
  *
  * Decompõe a partir do ÍNDICE TOTAL de quadros (arredondado), não de `ms%1000`.

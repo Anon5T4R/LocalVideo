@@ -6,6 +6,8 @@ import {
   envelopeAt,
   layersAt,
   needsComposite,
+  slideOffset,
+  wipeRect,
   type MediaLayer,
 } from "../compose";
 import type { Clip, Timeline, Track } from "../timeline";
@@ -103,7 +105,9 @@ describe("wipe/slide na prévia (v0.4.1) — a MESMA fronteira do export", () =>
     const b = ls[1] as MediaLayer;
     // O alfa fica cheio — quem recorta é o desenho, na fronteira W·progress.
     expect(b.alpha).toBe(1);
-    expect(b.transition).toEqual({ kind: "wipe", progress: 0.5 });
+    // `dir` vem junto desde a v0.9.2 — e o padrão de quem não tem direção
+    // gravada é o `lr`, o único comportamento que existia antes dela.
+    expect(b.transition).toEqual({ kind: "wipe", dir: "lr", progress: 0.5 });
   });
 
   it("slide idem, com o kind certo", () => {
@@ -165,5 +169,48 @@ describe("colorToCanvasFilter — aproxima o eq (e o app avisa)", () => {
     expect(colorToCanvasFilter({ brightness: 0.2, contrast: 1.5, saturation: 0.5 })).toBe(
       "brightness(1.200) contrast(1.500) saturate(0.500)",
     );
+  });
+});
+
+/* ================================================================== */
+/* v0.9.2 — direções do wipe/slide na PRÉVIA                          */
+/* ================================================================== */
+
+describe("wipeRect / slideOffset — a prévia desenha a MESMA fronteira do export", () => {
+  // O par com `args.test.ts` é o ponto destes testes: quando a conta do canvas
+  // discorda da expressão do ffmpeg, o usuário só descobre depois de esperar o
+  // render inteiro — e aí não sabe se errou ele ou o app.
+  const W = 100;
+  const H = 50;
+
+  it("wipe: no meio da transição metade da tela está revelada, pelo lado certo", () => {
+    expect(wipeRect("lr", 0.5, W, H)).toEqual({ x: 0, y: 0, w: 50, h: 50 });
+    expect(wipeRect("rl", 0.5, W, H)).toEqual({ x: 50, y: 0, w: 50, h: 50 });
+    expect(wipeRect("tb", 0.5, W, H)).toEqual({ x: 0, y: 0, w: 100, h: 25 });
+    expect(wipeRect("bt", 0.5, W, H)).toEqual({ x: 0, y: 25, w: 100, h: 25 });
+  });
+
+  it("wipe: começa sem nada revelado e termina com a tela inteira", () => {
+    for (const d of ["lr", "rl", "tb", "bt"] as const) {
+      const ini = wipeRect(d, 0, W, H);
+      expect(ini.w * ini.h).toBe(0);
+      expect(wipeRect(d, 1, W, H)).toEqual({ x: 0, y: 0, w: W, h: H });
+    }
+  });
+
+  it("slide: entra de fora da tela pelo lado da direção e crava em (0,0)", () => {
+    expect(slideOffset("lr", 0, W, H)).toEqual({ dx: -100, dy: 0 });
+    expect(slideOffset("rl", 0, W, H)).toEqual({ dx: 100, dy: 0 });
+    expect(slideOffset("tb", 0, W, H)).toEqual({ dx: 0, dy: -50 });
+    expect(slideOffset("bt", 0, W, H)).toEqual({ dx: 0, dy: 50 });
+    for (const d of ["lr", "rl", "tb", "bt"] as const) {
+      expect(slideOffset(d, 1, W, H)).toEqual({ dx: 0, dy: 0 });
+    }
+  });
+
+  it("progresso fora de 0..1 é grampeado (nunca desenha fora da caixa)", () => {
+    expect(wipeRect("lr", 2, W, H)).toEqual({ x: 0, y: 0, w: W, h: H });
+    expect(wipeRect("lr", -1, W, H).w).toBe(0);
+    expect(slideOffset("lr", 5, W, H)).toEqual({ dx: 0, dy: 0 });
   });
 });
