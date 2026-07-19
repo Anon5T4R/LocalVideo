@@ -10,10 +10,15 @@ nenhum: o ffmpeg roda aqui, na sua máquina.
 
 ## Estado
 
-**v0.1.0 — ondas 1 e 2.** Importar (ffprobe), timeline de uma trilha com
-miniaturas, cortar/aparar/reordenar/remover, undo/redo, projeto `.tvproj`,
-**exportar pelos dois caminhos**, **prévia quadro a quadro (WebCodecs)** e
-**importação de marcadores**.
+**v0.6.0.** Importar (ffprobe), timeline **multi-trilha** com miniaturas,
+cortar/aparar/reordenar/remover com snap a quadro-chave e ripple, undo/redo,
+projeto `.tvproj`, **exportar pelos dois caminhos**, **prévia quadro a quadro
+(WebCodecs)**, importação de marcadores, **PiP/camadas com keyframes de
+posição/escala/opacidade**, **transições** (crossfade/wipe/slide), **mix de
+áudio por clipe**, **separar áudio do vídeo** (uma trilha por faixa do
+arquivo — takes do LocalRecord com mic + áudio do sistema viram duas trilhas
+editáveis), **legendas** (importa SRT/VTT como clipes de título editáveis,
+queimadas no export), títulos com drawtext, e **menu de contexto** nos clipes.
 
 ### Exportar: os dois caminhos
 
