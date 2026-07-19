@@ -12,6 +12,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label: string;
+  /** Atalho mostrado à direita ("Ctrl+D", "S"). Não liga tecla nenhuma — só
+   *  ENSINA: um menu que mostra o atalho é como o dedo aprende a não voltar ao
+   *  menu. Quem escuta a tecla continua sendo o handler global do `App`. */
+  hint?: string;
   onClick: () => void;
   /** Cinza e sem clique — a ação existe mas não cabe agora (ex.: separar áudio
    *  de um clipe sem som). Mostrar desabilitado ensina que a ação existe. */
@@ -76,7 +80,8 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
             onClose();
           }}
         >
-          {it.label}
+          <span className="ctxmenu-label">{it.label}</span>
+          {it.hint ? <kbd className="ctxmenu-hint">{it.hint}</kbd> : null}
         </button>
       ))}
     </div>

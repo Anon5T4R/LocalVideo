@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { audioGainAt, audioLayersAt, hasMixAudio } from "../audiomix";
+import {
+  audioGainAt,
+  audioLayersAt,
+  hasMixAudio,
+  usesNonDefaultAudioTrack,
+} from "../audiomix";
 import type { Clip, Timeline, Track } from "../timeline";
 
 const media = (id: string, startMs: number, durationMs: number, over: Partial<Clip> = {}): Clip => ({
@@ -108,5 +113,37 @@ describe("hasMixAudio — há trilha de fundo pra mixar?", () => {
       track("a1", "audio", [media("m", 0, 5000, { muted: true })]),
     ]);
     expect(hasMixAudio(soMudo, "v1")).toBe(false);
+  });
+});
+
+describe("usesNonDefaultAudioTrack — o gatilho do aviso honesto da prévia", () => {
+  // O `<video>`/`<audio>` do webview NÃO deixa escolher faixa de áudio
+  // (`'audioTracks' in HTMLVideoElement === false` no Chromium/WebView2). Então
+  // um clipe que pede a 2ª faixa toca a padrão na prévia e a certa no export.
+  // A UI tem que DIZER isso — esta função é quem responde "tem que dizer?".
+  const vt = (clips: Clip[]): Track => ({ id: "v1", kind: "video", clips });
+  const at = (clips: Clip[]): Track => ({ id: "a1", kind: "audio", clips });
+  const tl = (tracks: Track[]): Timeline => ({ version: 2, tracks });
+
+  it("timeline comum (só a faixa padrão) não avisa nada", () => {
+    expect(usesNonDefaultAudioTrack(tl([vt([media("v", 0, 1000)]), at([])]))).toBe(false);
+  });
+
+  it("clipe pedindo a 2ª faixa (o take de faixas separadas) AVISA", () => {
+    const t = tl([
+      vt([media("v", 0, 1000, { muted: true })]),
+      at([media("a0", 0, 1000, { audioStreamIndex: 0 }), media("a1", 0, 1000, { audioStreamIndex: 1 })]),
+    ]);
+    expect(usesNonDefaultAudioTrack(t)).toBe(true);
+  });
+
+  it("faixa 0 explícita não avisa (é a padrão — a prévia acerta)", () => {
+    const t = tl([vt([media("v", 0, 1000, { audioStreamIndex: 0 })]), at([])]);
+    expect(usesNonDefaultAudioTrack(t)).toBe(false);
+  });
+
+  it("clipe MUDO não avisa: ele não toca, logo não mente", () => {
+    const t = tl([vt([]), at([media("a1", 0, 1000, { audioStreamIndex: 1, muted: true })])]);
+    expect(usesNonDefaultAudioTrack(t)).toBe(false);
   });
 });

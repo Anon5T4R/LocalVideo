@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  audioTrackAt,
   FALLBACK_FPS,
   effectiveFps,
   formatDuration,
@@ -11,6 +12,7 @@ import {
   parseFrameRate,
   stepFrames,
   thumbTimes,
+  trackDisplayName,
   withFps,
   type RawMediaInfo,
 } from "../probe";
@@ -200,5 +202,39 @@ describe("tempo legível", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(1536)).toBe("1.5 KB");
     expect(formatSize(20 * 1024 * 1024)).toBe("20 MB");
+  });
+});
+
+describe("audioTrackAt — ordinal do áudio × índice de stream", () => {
+  // Um take do LocalRecord em faixas separadas: os áudios são os STREAMS 1 e 2
+  // (o 0 é o vídeo), mas o ffmpeg — e o `Clip.audioStreamIndex` — os conta como
+  // os ORDINAIS 0 e 1. Foi misturar os dois que fez os dois clipes destacados
+  // ficarem indistinguíveis na régua e no inspetor.
+  const tracks = [
+    { index: 1, codec: "aac", channels: 2, title: "Microfone", language: null },
+    { index: 2, codec: "aac", channels: 2, title: "Áudio do sistema", language: null },
+  ];
+
+  it("REGRESSÃO: o ordinal 0 é a PRIMEIRA faixa, mesmo sendo o stream 1", () => {
+    expect(audioTrackAt(tracks, 0)!.title).toBe("Microfone");
+  });
+
+  it("REGRESSÃO: o ordinal 1 é a SEGUNDA faixa, não a primeira", () => {
+    // Procurar por `a.index === 1` devolvia "Microfone" aqui — o clipe do áudio
+    // do sistema exibia o nome do microfone.
+    expect(audioTrackAt(tracks, 1)!.title).toBe("Áudio do sistema");
+  });
+
+  it("fora do alcance é undefined (a UI cai pro rótulo genérico)", () => {
+    expect(audioTrackAt(tracks, 2)).toBeUndefined();
+    expect(audioTrackAt(tracks, -1)).toBeUndefined();
+    expect(audioTrackAt([], 0)).toBeUndefined();
+  });
+
+  it("e os nomes de exibição batem com o ordinal", () => {
+    expect(tracks.map((t, ord) => [ord, trackDisplayName(t)])).toEqual([
+      [0, "Microfone"],
+      [1, "Áudio do sistema"],
+    ]);
   });
 });

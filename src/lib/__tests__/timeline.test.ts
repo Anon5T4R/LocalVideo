@@ -22,6 +22,9 @@ import {
   pushHistory,
   redo,
   removeClip,
+  removeClipRipple,
+  duplicateClip,
+  splitTargetId,
   replacePresent,
   setClipEdge,
   setClipSpeed,
@@ -504,5 +507,132 @@ describe("addSubtitles — legenda vira clipe de titulo editavel", () => {
   it("lista vazia nao mexe na timeline", () => {
     const tl = newTimeline();
     expect(addSubtitles(tl, [])).toBe(tl);
+  });
+});
+
+describe("splitTargetId — o S corta o clipe SELECIONADO, não a trilha base", () => {
+  /** V1 com um clipe 0..6000; A1 com um clipe 1000..5000 (áudio destacado). */
+  const dois = (): Timeline =>
+    tl([
+      vtrack([media("v", 0, 6000, 0, "v.mp4")]),
+      atrack([media("a", 1000, 4000, 0, "v.mp4")], "a1"),
+    ]);
+
+  it("REGRESSÃO: com um clipe de trilha NÃO-BASE selecionado, corta ELE", () => {
+    // É o bug: até a v0.7 o doSplit perguntava sempre ao `baseVideoTrack`, então
+    // com o áudio separado selecionado o S cortava o vídeo lá embaixo.
+    expect(splitTargetId(dois(), "a", 2000)).toBe("a");
+  });
+
+  it("com o playhead FORA do clipe selecionado, cai na trilha base", () => {
+    // 500 ms: o clipe de áudio ainda não começou; o vídeo está tocando.
+    expect(splitTargetId(dois(), "a", 500)).toBe("v");
+  });
+
+  it("sem seleção, é a trilha base (comportamento de sempre)", () => {
+    expect(splitTargetId(dois(), null, 2000)).toBe("v");
+  });
+
+  it("em cima da borda do selecionado não corta ele (cai na base)", () => {
+    expect(splitTargetId(dois(), "a", 1000)).toBe("v");
+  });
+
+  it("playhead num buraco sem seleção: não há o que cortar", () => {
+    const vazio = tl([vtrack([media("v", 0, 1000)]), atrack([])]);
+    expect(splitTargetId(vazio, null, 5000)).toBeNull();
+  });
+
+  it("de fato CORTA a trilha não-base ponta a ponta (S de verdade)", () => {
+    const t0 = dois();
+    const id = splitTargetId(t0, "a", 3000)!;
+    const t1 = splitAt(t0, id, 3000);
+    const at = t1.tracks[1];
+    expect(at.clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+      [1000, 2000],
+      [3000, 2000],
+    ]);
+    // O vídeo da base NÃO foi tocado.
+    expect(t1.tracks[0].clips).toHaveLength(1);
+  });
+});
+
+describe("removeClipRipple — o Del que fecha o buraco", () => {
+  it("puxa os seguintes da MESMA trilha o tamanho do que saiu", () => {
+    // base: a=[0,1000) b=[1000,3000) c=[3000,6000). Removendo b (2000 ms),
+    // c tem que subir pra 1000 — sem buraco.
+    const out = removeClipRipple(base(), "b");
+    expect(out.tracks[0].clips.map((c) => [c.id, c.startMs, c.durationMs])).toEqual([
+      ["a", 0, 1000],
+      ["c", 1000, 3000],
+    ]);
+    expect(timelineDuration(out)).toBe(4000);
+  });
+
+  it("quem vem ANTES fica parado", () => {
+    const out = removeClipRipple(base(), "c");
+    expect(out.tracks[0].clips.map((c) => c.startMs)).toEqual([0, 1000]);
+  });
+
+  it("não mexe nas OUTRAS trilhas (a música de fundo não pode dessincronizar)", () => {
+    const t0 = tl([
+      vtrack([media("a", 0, 1000), media("b", 1000, 2000)]),
+      atrack([media("m", 0, 3000, 0, "m.mp3")], "a1"),
+    ]);
+    const out = removeClipRipple(t0, "a");
+    expect(out.tracks[1].clips[0].startMs).toBe(0);
+    expect(out.tracks[0].clips.map((c) => c.startMs)).toEqual([0]);
+  });
+
+  it("id que não existe devolve a MESMA timeline (sem passo de undo à toa)", () => {
+    const t0 = base();
+    expect(removeClipRipple(t0, "zzz")).toBe(t0);
+  });
+
+  it("sem ripple, o removeClip normal continua deixando o buraco", () => {
+    const out = removeClip(base(), "b");
+    expect(out.tracks[0].clips.map((c) => c.startMs)).toEqual([0, 3000]);
+  });
+});
+
+describe("duplicateClip — Ctrl+D", () => {
+  it("põe a cópia logo depois e EMPURRA quem vinha atrás", () => {
+    // Duplicar b (1000..3000): a cópia entra em 3000 e c vai de 3000 pra 5000.
+    const out = duplicateClip(base(), "b");
+    expect(out.tracks[0].clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+      [0, 1000],
+      [1000, 2000],
+      [3000, 2000],
+      [5000, 3000],
+    ]);
+  });
+
+  it("a cópia leva as propriedades mas NUNCA o id", () => {
+    const t0 = tl([
+      vtrack([{ ...media("b", 0, 2000, 5000, "b.mp4"), volume: 0.4, speed: 2, audioStreamIndex: 1 }]),
+      atrack([]),
+    ]);
+    const out = duplicateClip(t0, "b");
+    const [orig, copy] = out.tracks[0].clips;
+    expect(copy.id).not.toBe(orig.id);
+    expect(copy.volume).toBe(0.4);
+    expect(copy.speed).toBe(2);
+    expect(copy.audioStreamIndex).toBe(1);
+    expect(copy.srcIn).toBe(5000);
+    // Encostada, não sobreposta: sobreposição É transição neste modelo, e um
+    // crossfade de brinde seria um efeito que ninguém pediu.
+    expect(copy.startMs).toBe(clipEnd(orig));
+    expect(overlapWithNext(out.tracks[0], 0)).toBe(0);
+  });
+
+  it("duplica em trilha NÃO-base também (o áudio destacado)", () => {
+    const t0 = tl([vtrack([media("v", 0, 6000)]), atrack([media("a", 0, 2000)], "a1")]);
+    const out = duplicateClip(t0, "a");
+    expect(out.tracks[1].clips.map((c) => c.startMs)).toEqual([0, 2000]);
+    expect(out.tracks[0].clips).toHaveLength(1);
+  });
+
+  it("id inexistente devolve a MESMA timeline", () => {
+    const t0 = base();
+    expect(duplicateClip(t0, "zzz")).toBe(t0);
   });
 });

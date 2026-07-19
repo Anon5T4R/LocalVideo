@@ -25,6 +25,9 @@ import {
   pushHistory,
   redo,
   removeClip,
+  removeClipRipple,
+  duplicateClip,
+  splitTargetId,
   detachAudio,
   addSubtitles,
   replacePresent,
@@ -33,7 +36,6 @@ import {
   setTransition,
   splitAt,
   timelineDuration,
-  timeToClip,
   undo,
   updateClip,
   type ClipPatch,
@@ -111,6 +113,8 @@ interface EditorState {
   beginEdit: () => void;
   endEdit: () => void;
   doRemove: (id?: string) => void;
+  /** Duplica o clipe selecionado (ou `id`) logo depois dele (Ctrl+D). */
+  doDuplicate: (id?: string) => void;
   /** Separa o áudio do clipe selecionado (ou `id`) numa trilha de áudio. */
   doDetachAudio: (id?: string) => void;
   doUndo: () => void;
@@ -261,11 +265,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   doSplit: () => {
-    const { history, playhead } = get();
-    // Corta o clipe da trilha base sob o playhead (comportamento da v0.1).
-    const hit = timeToClip(baseVideoTrack(history.present), playhead);
-    if (!hit) return;
-    const next = splitAt(history.present, hit.clip.id, playhead);
+    const { history, playhead, selectedId } = get();
+    const id = splitTargetId(history.present, selectedId, playhead);
+    if (!id) return;
+    const next = splitAt(history.present, id, playhead);
     if (next === history.present) return;
     set({ history: pushHistory(history, next), dirty: true });
   },
@@ -362,8 +365,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   doRemove: (id) => {
     const target = id ?? get().selectedId;
     if (!target) return;
-    const { history } = get();
-    const next = removeClip(history.present, target);
+    const { history, rippleMode } = get();
+    // O modo Ripple vale pro Del também (v0.7.1): antes ele só mandava no
+    // aparar, então o mesmo interruptor "não deixa buraco" deixava um buraco
+    // enorme quando se apagava um clipe. Ver `removeClipRipple`.
+    const next = rippleMode
+      ? removeClipRipple(history.present, target)
+      : removeClip(history.present, target);
     if (next === history.present) return;
     set({
       history: pushHistory(history, next),
@@ -371,6 +379,21 @@ export const useEditor = create<EditorState>((set, get) => ({
       selectedId: get().selectedId === target ? null : get().selectedId,
     });
     clampPlayhead(set, get);
+  },
+
+  doDuplicate: (id) => {
+    const target = id ?? get().selectedId;
+    if (!target) return;
+    const { history } = get();
+    const before = new Set<string>();
+    for (const tk of history.present.tracks) for (const c of tk.clips) before.add(c.id);
+    const next = duplicateClip(history.present, target);
+    if (next === history.present) return;
+    // A CÓPIA vira a seleção (é o que o dedo espera de um Ctrl+D: continuar
+    // mexendo no que acabou de nascer, não no original).
+    let createdId: string | null = null;
+    for (const tk of next.tracks) for (const c of tk.clips) if (!before.has(c.id)) createdId = c.id;
+    set({ history: pushHistory(history, next), dirty: true, selectedId: createdId ?? target });
   },
 
   doDetachAudio: (id) => {

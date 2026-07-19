@@ -94,3 +94,30 @@ export function hasMixAudio(tl: Timeline, baseTrackId: string | null): boolean {
     (tk) => tk.id !== baseTrackId && tk.clips.some((c) => isMedia(c) && !c.muted),
   );
 }
+
+/**
+ * Há algum clipe pedindo uma faixa de áudio que NÃO é a primeira do arquivo?
+ *
+ * ─── O limite que a prévia não tem como vencer ───────────────────────────────
+ *
+ * Um take do LocalRecord em "faixas separadas" traz duas faixas de áudio no
+ * mesmo arquivo (Microfone e Áudio do sistema). O EXPORT separa as duas
+ * corretamente — o compilador endereça cada uma por `[i:a:N]` no ffmpeg. A
+ * PRÉVIA não consegue: quem toca som aqui é o `<video>`/`<audio>` do webview, e
+ * **`HTMLMediaElement.audioTracks` não existe no Chromium** (medido no motor do
+ * WebView2: `'audioTracks' in document.createElement('video') === false`). Sem
+ * essa API não há como dizer ao elemento "toque a faixa 2" — ele toca a padrão,
+ * sempre. Resultado: dois clipes destacados do mesmo arquivo soam IGUAIS na
+ * prévia, embora saiam certos no arquivo exportado.
+ *
+ * Tocar a faixa certa exigiria extrair cada uma pra um arquivo temporário no
+ * momento do detach (comando novo no Rust, cache em disco, espera no import) —
+ * é uma fatia inteira, não um conserto. Enquanto ela não vem, a regra da casa
+ * manda DIZER: esta função é o gatilho do aviso na barra da prévia. Fingir que
+ * a prévia separa seria pior que o bug.
+ */
+export function usesNonDefaultAudioTrack(tl: Timeline): boolean {
+  return tl.tracks.some((tk) =>
+    tk.clips.some((c) => isMedia(c) && !c.muted && (c.audioStreamIndex ?? 0) > 0),
+  );
+}

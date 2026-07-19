@@ -202,6 +202,29 @@ const pt = {
 
   "clip.secVideo": "Vídeo",
   "clip.secColor": "Cor",
+  /* --- inspetor em seções recolhíveis (v0.7.1) --- */
+  "clip.secInfo": "Informações",
+  "clip.secAudio": "Áudio",
+  "clip.secSpeed": "Velocidade",
+  "clip.secTransition": "Transição",
+  "clip.secCropPos": "Recorte e posição",
+  "clip.nTracks": "{n} faixas",
+  "clip.audioTrackHint":
+    "A prévia toca a faixa padrão do arquivo — o motor de mídia do sistema não deixa escolher a faixa. O EXPORT separa as faixas corretamente.",
+  "clip.transNone":
+    "Não há transição nesta emenda. Arraste a alça de transição na borda direita do clipe (ou sobreponha-o ao próximo) pra criar uma.",
+  "preview.trackLimit": "prévia mistura as faixas",
+  "preview.trackLimitHint":
+    "Este projeto usa mais de uma faixa de áudio do mesmo arquivo. Na prévia todas tocam a faixa padrão (o motor de mídia do sistema não deixa escolher a faixa); no arquivo exportado cada clipe leva a faixa certa.",
+  "tl.duplicate": "Duplicar",
+  "tl.ctxDuplicate": "Duplicar clipe",
+  "tl.ctxMute": "Silenciar clipe",
+  "tl.ctxUnmute": "Tirar o silêncio",
+  "tl.removeRipple": "Remover e fechar o buraco",
+  "top.menuFile": "Arquivo",
+  "top.menuImport": "Importar",
+  "top.importMedia": "Vídeo ou áudio…",
+
   "clip.secMotion": "Movimento",
   "clip.speed": "Velocidade",
   "clip.speedHint": "Muda a duração na timeline e reposiciona os clipes seguintes.",
@@ -489,6 +512,29 @@ const en: Record<MessageKey, string> = {
 
   "clip.secVideo": "Video",
   "clip.secColor": "Color",
+  /* --- collapsible inspector sections (v0.7.1) --- */
+  "clip.secInfo": "Information",
+  "clip.secAudio": "Audio",
+  "clip.secSpeed": "Speed",
+  "clip.secTransition": "Transition",
+  "clip.secCropPos": "Crop & position",
+  "clip.nTracks": "{n} tracks",
+  "clip.audioTrackHint":
+    "The preview plays the file's default track — the system media engine offers no way to pick a track. The EXPORT separates the tracks correctly.",
+  "clip.transNone":
+    "There is no transition at this cut. Drag the transition handle on the clip's right edge (or overlap it with the next clip) to create one.",
+  "preview.trackLimit": "preview mixes the tracks",
+  "preview.trackLimitHint":
+    "This project uses more than one audio track from the same file. In the preview they all play the default track (the system media engine offers no way to pick one); in the exported file each clip carries the right track.",
+  "tl.duplicate": "Duplicate",
+  "tl.ctxDuplicate": "Duplicate clip",
+  "tl.ctxMute": "Mute clip",
+  "tl.ctxUnmute": "Unmute clip",
+  "tl.removeRipple": "Remove and close the gap",
+  "top.menuFile": "File",
+  "top.menuImport": "Import",
+  "top.importMedia": "Video or audio…",
+
   "clip.secMotion": "Motion",
   "clip.speed": "Speed",
   "clip.speedHint": "Changes the timeline duration and shifts the following clips.",
@@ -776,6 +822,29 @@ const es: Record<MessageKey, string> = {
 
   "clip.secVideo": "Vídeo",
   "clip.secColor": "Color",
+  /* --- inspector en secciones plegables (v0.7.1) --- */
+  "clip.secInfo": "Información",
+  "clip.secAudio": "Audio",
+  "clip.secSpeed": "Velocidad",
+  "clip.secTransition": "Transición",
+  "clip.secCropPos": "Recorte y posición",
+  "clip.nTracks": "{n} pistas",
+  "clip.audioTrackHint":
+    "La vista previa reproduce la pista predeterminada del archivo — el motor multimedia del sistema no permite elegir la pista. La EXPORTACIÓN separa las pistas correctamente.",
+  "clip.transNone":
+    "No hay transición en esta unión. Arrastra el tirador de transición del borde derecho del clip (o superponlo con el siguiente) para crear una.",
+  "preview.trackLimit": "la vista previa mezcla las pistas",
+  "preview.trackLimitHint":
+    "Este proyecto usa más de una pista de audio del mismo archivo. En la vista previa todas reproducen la pista predeterminada (el motor multimedia del sistema no permite elegirla); en el archivo exportado cada clip lleva la pista correcta.",
+  "tl.duplicate": "Duplicar",
+  "tl.ctxDuplicate": "Duplicar clip",
+  "tl.ctxMute": "Silenciar clip",
+  "tl.ctxUnmute": "Quitar el silencio",
+  "tl.removeRipple": "Quitar y cerrar el hueco",
+  "top.menuFile": "Archivo",
+  "top.menuImport": "Importar",
+  "top.importMedia": "Vídeo o audio…",
+
   "clip.secMotion": "Movimiento",
   "clip.speed": "Velocidad",
   "clip.speedHint": "Cambia la duración en la línea de tiempo y reposiciona los clips siguientes.",

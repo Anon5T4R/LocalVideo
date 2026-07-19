@@ -268,6 +268,21 @@ select {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+/* `nowrap` em TODO botão da topbar: era a causa mecânica do serrilhado. Sem ele
+   um rótulo de duas palavras quebrava, o botão virava 50px de altura em vez de
+   32, e a barra ficava com dentes. Que o botão encolha ou o texto corte — mas
+   uma barra de ferramentas tem UMA linha. */
+.topbar button {
+  white-space: nowrap;
+}
+.top-menu-btn.on {
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+.top-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
 .brand {
   font-weight: 700;
   font-size: 15px;
@@ -316,19 +331,37 @@ select {
 }
 
 /* ---------- corpo ---------- */
+/* O achado nº 1 do mapa de UI, e o motivo de o inspetor "ficar estranho":
+ * quem rolava era o WORKSPACE INTEIRO. O `.grid` tinha `overflow-y: auto` e a
+ * prévia dividia a mesma linha com o inspetor — que, todo expandido, media
+ * 1068 px numa área útil de 339 px. Resultado: rolar as opções de clipe
+ * ARRASTAVA A PRÉVIA PRA FORA DA TELA. Editar vídeo sem ver o vídeo.
+ *
+ * A cura tem duas metades e as duas importam: (1) o grid deixa de rolar
+ * (`overflow: hidden`) e vira uma linha de altura fixa (`minmax(0, 1fr)`), o
+ * que prende a prévia no lugar; (2) o inspetor ganha rolagem PRÓPRIA (ver
+ * `.inspector`). `minmax(0, ...)` e não `1fr` puro porque a altura mínima
+ * automática do grid ignoraria o `overflow` dos filhos e o card estouraria pra
+ * fora da janela de novo. */
 .grid {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
-  align-content: start;
   min-height: 0;
 }
+/* Estreito: as colunas empilham e não há altura pra dar duas rolagens
+ * independentes — aí o workspace volta a rolar inteiro, que é o comportamento
+ * certo pra uma coluna só. */
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    align-content: start;
+    overflow-y: auto;
   }
 }
 .card {
@@ -426,6 +459,16 @@ kbd {
   border-radius: 10px;
   overflow: hidden;
   background: #000;
+}
+/* Com a prévia FIXA (ver `.grid`), o palco passa a CABER na altura que sobrou em
+ * vez de ditá-la pelo 16/9. Sem isto o card de 16/9 estouraria a linha do grid e
+ * o topo do vídeo sairia por cima — trocaríamos um bug de rolagem por um de
+ * corte. O aspecto real do filme continua honesto: quem letterboxa é o
+ * `object-fit: contain` do `<video>`/canvas, sobre o preto do palco. */
+.preview-card .stage {
+  flex: 1;
+  min-height: 90px;
+  aspect-ratio: auto;
 }
 .stage-video {
   width: 100%;
@@ -1051,6 +1094,106 @@ kbd {
 }
 
 /* ---------- inspetor (painel de propriedades) ---------- */
+
+/* A metade 2 da cura do scroll (ver `.grid`): o card não cresce além da linha do
+ * grid, e quem rola é a LISTA DE SEÇÕES — o cabeçalho ("Clipe selecionado" +
+ * duração) fica cravado no topo. O `-14px/14px` de margem/padding é pra a barra
+ * de rolagem encostar na borda do card em vez de flutuar no meio dos campos. */
+.grid > .card {
+  overflow: hidden;
+  min-height: 0;
+}
+.inspector .insp-sections {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -14px -12px;
+  padding: 0 14px 12px;
+}
+
+/* ---------- inspetor v0.7.1: seções recolhíveis ---------- */
+.insp-sec + .insp-sec {
+  border-top: 1px solid var(--border);
+}
+.insp-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 2px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--text);
+}
+.insp-sec-head:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+.insp-sec-title {
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+}
+/* O chevron gira em vez de trocar de glifo — a rotação diz "isto abre". */
+.insp-chevron {
+  display: inline-block;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+.insp-sec.open .insp-chevron {
+  transform: rotate(90deg);
+}
+/* O ponto "em uso": com sete seções fechadas, é ele que responde "onde é que eu
+   mexi?" sem obrigar a abrir todas. */
+.insp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.insp-sec-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 2px 12px;
+}
+/* Dentro de uma seção o `sec-head` antigo (Recorte/Cor) não precisa mais do
+   traço em cima — quem separa agora é a borda da seção. */
+.insp-sec-body .sec-head {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+/* MODO ESTREITO (as colunas empilham): aqui a "prévia fixa" não existe — não há
+ * altura pra duas rolagens independentes. Então tudo volta ao comportamento
+ * natural de uma coluna só: o workspace rola inteiro, o palco volta a se medir
+ * pelo 16/9 (senão o `flex: 1` o esmagaria nos 90px do min-height) e o inspetor
+ * cresce à vontade em vez de rolar dentro de si.
+ *
+ * Este bloco mora DEPOIS das regras que ele desfaz de propósito: mesma
+ * especificidade, então quem vem por último ganha. Deixá-lo lá em cima junto do
+ * `.grid` foi exatamente o que não funcionou — medido a 820px, o palco ficava
+ * com 90px de altura e o inspetor rolava dentro de um card sem altura. */
+@media (max-width: 900px) {
+  .grid > .card {
+    overflow: visible;
+  }
+  .preview-card .stage {
+    flex: none;
+    aspect-ratio: 16 / 9;
+  }
+  .inspector .insp-sections {
+    flex: none;
+    overflow: visible;
+    margin-bottom: 0;
+    padding-bottom: 0;
+  }
+}
+
 .inspector .fields {
   display: flex;
   flex-direction: column;
@@ -1277,6 +1420,9 @@ button svg,
   flex-direction: column;
 }
 .ctxmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 18px;
   text-align: left;
   padding: 7px 10px;
   border: 0;
@@ -1285,6 +1431,44 @@ button svg,
   border-radius: 5px;
   font: inherit;
   cursor: pointer;
+}
+.ctxmenu-label {
+  flex: 1;
+  white-space: nowrap;
+}
+/* O atalho à direita: discreto (é referência, não botão) mas alinhado, que é o
+   que faz uma coluna de atalhos parecer um menu de programa de verdade. */
+.ctxmenu-hint {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+/* Separador vertical entre grupos de botões (barra da timeline, topbar). */
+.tl-sep,
+.top-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+/* Aviso inline honesto (limite de faixa de áudio na prévia): visível sem ser
+   alarme — é uma ressalva permanente, não um erro que apareceu agora. */
+.warn-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  border-radius: 999px;
+  padding: 1px 9px;
+  cursor: help;
 }
 .ctxmenu-item:hover:not(:disabled) {
   background: var(--border);

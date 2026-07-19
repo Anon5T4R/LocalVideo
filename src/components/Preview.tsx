@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { audioLayersAt, hasMixAudio } from "../lib/audiomix";
+import { audioGainAt, audioLayersAt, hasMixAudio, usesNonDefaultAudioTrack } from "../lib/audiomix";
 import {
   colorToCanvasFilter,
   layersAt,
@@ -267,6 +267,29 @@ export default function Preview() {
     if (Math.abs(v.currentTime - want) > 0.02) v.currentTime = want;
   }, [baseHit, playing]);
 
+  /* ---------- o som do <video>: MUDO e VOLUME do clipe (v0.7.1) ---------- */
+
+  // O bug que o João sentiu e ninguém tinha visto no código: o `<video>` era
+  // montado SEM `muted` e SEM `volume`. Ou seja, `clip.muted` — a propriedade
+  // que o "Separar áudio" LIGA no clipe de vídeo, e que a caixinha "Silenciar"
+  // do inspetor liga também — não chegava ao elemento que faz o som. Depois de
+  // separar o áudio, a prévia tocava o vídeo original E os clipes de áudio
+  // destacados ao mesmo tempo: o usuário ouvia tudo dobrado e concluía, com
+  // razão, que "separar áudio não faz nada".
+  //
+  // Imperativo (não via prop `muted` no JSX) pra também levar o GANHO do clipe —
+  // volume, envelope e fades — pela MESMA conta que o mixer das outras trilhas
+  // usa (`audioGainAt`). Assim a base deixa de ser a única trilha cujo volume só
+  // se ouvia depois de exportar. As ressalvas de honestidade (ganho > 1 não sobe
+  // no HTMLMedia) são as do cabeçalho de `audiomix.ts` — as mesmas pra todos.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const c = baseHit?.clip;
+    v.muted = !!c?.muted;
+    v.volume = c ? audioGainAt(c, playhead) : 1;
+  }, [baseHit, playhead]);
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -382,6 +405,9 @@ export default function Preview() {
   // Há trilha de fundo pra mixar? Aviso honesto: a prévia AGORA toca a 2ª trilha
   // (o buraco que a v0.3 fechou), mas amplificar acima de 100% só sai no export.
   const mixNote = hasMixAudio(timeline, track?.id ?? null);
+  // Aviso honesto do limite de faixa (ver `usesNonDefaultAudioTrack`): a prévia
+  // toca a faixa PADRÃO de cada arquivo; só o export separa mic e sistema.
+  const trackNote = usesNonDefaultAudioTrack(timeline);
 
   const showVideo = baseHit && !gone && !doComposite;
 
@@ -505,6 +531,11 @@ export default function Preview() {
         {mixNote ? (
           <span className="muted small" title={t("preview.mixHint")}>
             {t("preview.mix")}
+          </span>
+        ) : null}
+        {trackNote ? (
+          <span className="warn-note small" title={t("preview.trackLimitHint")}>
+            <Icon name="warn" /> {t("preview.trackLimit")}
           </span>
         ) : null}
       </div>

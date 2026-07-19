@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../lib/i18n";
 import Icon from "./Icon";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
-import { formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
+import { audioTrackAt, formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
 import type { MediaInfo } from "../lib/probe";
 import { snapMove, snapValue } from "../lib/snap";
 import {
@@ -81,6 +81,8 @@ export default function Timeline() {
   const rippleMode = useEditor((s) => s.rippleMode);
   const setRippleMode = useEditor((s) => s.setRippleMode);
   const doDetachAudio = useEditor((s) => s.doDetachAudio);
+  const doDuplicate = useEditor((s) => s.doDuplicate);
+  const doUpdateClip = useEditor((s) => s.doUpdateClip);
   const doAddTitle = useEditor((s) => s.doAddTitle);
   const importEmbeddedSubtitles = useEditor((s) => s.importEmbeddedSubtitles);
   const [menu, setMenu] = useState<{ x: number; y: number; clip: Clip } | null>(null);
@@ -121,8 +123,12 @@ export default function Timeline() {
     if (track.kind !== "audio" || !c.path) return undefined;
     const tracks = media[c.path]?.audioTracks;
     if (!tracks || tracks.length < 2) return undefined;
+    // ORDINAL, não índice de stream — ver `audioTrackAt`. Procurar por
+    // `a.index === idx` fazia o clipe da 1ª faixa ficar sem etiqueta nenhuma
+    // (não existe stream 0 de áudio num arquivo com vídeo) e o da 2ª exibir o
+    // nome da 1ª: dois clipes que o olho não distinguia.
     const idx = c.audioStreamIndex ?? 0;
-    const info = tracks.find((a) => a.index === idx);
+    const info = audioTrackAt(tracks, idx);
     return info ? (trackDisplayName(info) ?? t("track.n", { n: idx + 1 })) : undefined;
   };
 
@@ -228,12 +234,24 @@ export default function Timeline() {
         <strong>{t("tl.title")}</strong>
         <span className="muted small">{t("tl.stats", { n: clipCount, dur: formatDuration(total) })}</span>
         <span className="toolbar-fill" />
-        <button onClick={doSplit} title={t("tl.split")} disabled={clipCount === 0}>
+        <button onClick={doSplit} title={`${t("tl.split")} (S)`} disabled={clipCount === 0}>
           <Icon name="split" /> {t("tl.split")}
         </button>
-        <button onClick={() => doRemove()} title={t("tl.remove")} disabled={!selectedId}>
+        <button
+          onClick={() => doDuplicate()}
+          title={`${t("tl.ctxDuplicate")} (Ctrl+D)`}
+          disabled={!selectedId}
+        >
+          <Icon name="plus" /> {t("tl.duplicate")}
+        </button>
+        <button
+          onClick={() => doRemove()}
+          title={`${rippleMode ? t("tl.removeRipple") : t("tl.remove")} (Del)`}
+          disabled={!selectedId}
+        >
           <Icon name="trash" /> {t("tl.remove")}
         </button>
+        <span className="tl-sep" aria-hidden />
         <button
           className={rippleMode ? "on" : ""}
           onClick={() => setRippleMode(!rippleMode)}
@@ -242,6 +260,7 @@ export default function Timeline() {
         >
           <Icon name="ripple" /> {t("tl.ripple")}
         </button>
+        <span className="tl-sep" aria-hidden />
         <button onClick={() => doAddTrack("video")} title={t("tl.addVideo")}>
           <Icon name="addVideo" /> {t("tl.addVideo")}
         </button>
@@ -364,15 +383,22 @@ export default function Timeline() {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={clipMenuItems(menu.clip, media, {
-            split: doSplit,
-            detach: () => doDetachAudio(menu.clip.id),
-            addTitle: doAddTitle,
-            remove: () => doRemove(menu.clip.id),
-            importSub: (ordinal) => {
-              if (menu.clip.path) void importEmbeddedSubtitles(menu.clip.path, ordinal);
+          items={clipMenuItems(
+            menu.clip,
+            media,
+            {
+              split: doSplit,
+              detach: () => doDetachAudio(menu.clip.id),
+              duplicate: () => doDuplicate(menu.clip.id),
+              toggleMute: () => doUpdateClip(menu.clip.id, { muted: !menu.clip.muted }),
+              addTitle: doAddTitle,
+              remove: () => doRemove(menu.clip.id),
+              importSub: (ordinal) => {
+                if (menu.clip.path) void importEmbeddedSubtitles(menu.clip.path, ordinal);
+              },
             },
-          })}
+            rippleMode,
+          )}
         />
       ) : null}
     </div>
@@ -388,10 +414,16 @@ function clipMenuItems(
   act: {
     split: () => void;
     detach: () => void;
+    duplicate: () => void;
+    toggleMute: () => void;
     addTitle: () => void;
     remove: () => void;
     importSub: (ordinal: number) => void;
   },
+  /** O modo Ripple está ligado? Só muda o RÓTULO do remover — a ação já
+   *  consulta o modo no store. Um "Remover" que fecha o buraco sem avisar é
+   *  surpresa; dizer "e fechar o buraco" é o mesmo clique, honesto. */
+  rippleMode = false,
 ): MenuItem[] {
   const info = clip.path ? media[clip.path] : undefined;
   const nAudio = info?.audioTracks.length ?? 0;
@@ -410,11 +442,24 @@ function clipMenuItems(
     divider: i === 0,
   }));
   return [
-    { label: t("tl.split"), onClick: act.split, disabled: !isMedia(clip) },
+    { label: t("tl.split"), hint: "S", onClick: act.split, disabled: !isMedia(clip) },
+    { label: t("tl.ctxDuplicate"), hint: "Ctrl+D", onClick: act.duplicate },
+    {
+      label: clip.muted ? t("tl.ctxUnmute") : t("tl.ctxMute"),
+      onClick: act.toggleMute,
+      disabled: !isMedia(clip) || nAudio === 0,
+      divider: true,
+    },
     { label: detachLabel, onClick: act.detach, disabled: !canDetach },
     ...subs,
-    { label: t("title.add"), onClick: act.addTitle, divider: true },
-    { label: t("tl.remove"), onClick: act.remove, danger: true, divider: true },
+    { label: t("title.add"), hint: "T", onClick: act.addTitle, divider: true },
+    {
+      label: rippleMode ? t("tl.removeRipple") : t("tl.remove"),
+      hint: "Del",
+      onClick: act.remove,
+      danger: true,
+      divider: true,
+    },
   ];
 }
 

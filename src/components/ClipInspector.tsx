@@ -19,6 +19,7 @@ import {
   type TransitionKind,
 } from "../lib/timeline";
 import { baseName, useEditor } from "../state/editor";
+import { useUi } from "../state/ui";
 import type { MediaInfo } from "../lib/probe";
 
 /**
@@ -102,6 +103,61 @@ const sliderSession = {
   onBlur: () => useEditor.getState().endEdit(),
 };
 
+/* ---------------- seções recolhíveis (v0.7.1) ---------------- */
+
+/**
+ * Uma seção do inspetor: cabeçalho clicável, chevron e um ponto quando a
+ * propriedade está EM USO.
+ *
+ * O achado que originou isto (medido no app rodando, janela 1280×720): o
+ * inspetor tinha **1068 px** de altura numa área útil de **339 px**, tudo
+ * sempre expandido numa coluna plana. Como quem rolava era o `.grid` inteiro —
+ * prévia e inspetor na mesma linha —, mexer em qualquer opção de clipe
+ * **levava a prévia pra fora da tela**. Era a causa nº 1 do "tá muito estranho
+ * como são as opções de clipe": não faltava opção, faltava hierarquia.
+ *
+ * O `dot` não é enfeite: com tudo fechado, é ele que responde "onde é que eu
+ * mexi?" sem abrir sete seções. Uma seção com valor ≠ do neutro nasce ABERTA e
+ * marcada; o resto nasce fechado. Depois que o usuário clica, a escolha dele
+ * manda (ver `sections` em `state/ui.ts`).
+ */
+function Section({
+  id,
+  title,
+  active,
+  summary,
+  children,
+}: {
+  id: string;
+  title: string;
+  /** A propriedade desta seção está em uso? (nasce aberta, ganha o ponto) */
+  active?: boolean;
+  /** Valor resumido à direita do título, pra ler sem abrir (ex.: "1×"). */
+  summary?: string;
+  children: React.ReactNode;
+}) {
+  const sections = useUi((s) => s.sections);
+  const toggleSection = useUi((s) => s.toggleSection);
+  const open = sections[id] ?? !!active;
+  return (
+    <div className={`insp-sec ${open ? "open" : ""}`}>
+      <button
+        className="insp-sec-head"
+        onClick={() => toggleSection(id, !open)}
+        aria-expanded={open}
+      >
+        <span className="insp-chevron" aria-hidden>
+          ▸
+        </span>
+        <span className="insp-sec-title">{title}</span>
+        {active ? <span className="insp-dot" aria-hidden /> : null}
+        {summary ? <span className="muted small tabnum">{summary}</span> : null}
+      </button>
+      {open ? <div className="insp-sec-body">{children}</div> : null}
+    </div>
+  );
+}
+
 /* ---------------- título ---------------- */
 function TitleFields({ c, doUpdateClip }: { c: Clip; doUpdateClip: UpdateClip }) {
   const tp = c.title!;
@@ -170,43 +226,78 @@ function MediaFields({
   const info = c.path ? media[c.path] : undefined;
   const vol = c.volume ?? 1;
   const hasAudio = info?.hasAudio ?? false;
+  const nTracks = info?.audioTracks.length ?? 0;
+  const sp = clipSpeed(c);
+  // "Em uso" de cada seção = a propriedade saiu do neutro. É o que decide qual
+  // seção nasce aberta e ganha o ponto — ver `Section`.
+  const audioActive =
+    !!c.muted || vol !== 1 || !!c.volumeKeyframes || !!c.fadeInMs || !!c.fadeOutMs ||
+    (c.audioStreamIndex ?? 0) > 0;
+  const videoActive = (c.opacity ?? 1) !== 1 || !!c.opacityKeyframes;
+  const cropActive = !!c.crop || !!c.transform;
+  const colorActive = !!c.color;
+
   return (
-    <div className="fields small">
-      <div className="kv-list small">
-        {kv(t("clip.file"), baseName(c.path ?? ""))}
-        {kv(t("clip.window"), `${formatDuration(c.srcIn ?? 0)} → ${formatDuration(srcOut(c))}`)}
-        {info ? (
-          <>
-            {kv(t("clip.res"), `${info.width}×${info.height}`)}
-            {kv(t("clip.fps"), info.fps.toFixed(3).replace(/\.?0+$/, ""))}
-            {kv(t("clip.codec"), info.videoCodec)}
-            {kv(t("clip.audio"), hasAudio ? (info.audioCodec ?? "—") : t("clip.noAudio"))}
-            {kv(t("clip.size"), formatSize(info.sizeBytes))}
-          </>
-        ) : null}
-      </div>
+    <div className="fields small insp-sections">
+      <Section id="info" title={t("clip.secInfo")} active>
+        <div className="kv-list small">
+          {kv(t("clip.file"), baseName(c.path ?? ""))}
+          {kv(t("clip.window"), `${formatDuration(c.srcIn ?? 0)} → ${formatDuration(srcOut(c))}`)}
+          {info ? (
+            <>
+              {kv(t("clip.res"), `${info.width}×${info.height}`)}
+              {kv(t("clip.fps"), info.fps.toFixed(3).replace(/\.?0+$/, ""))}
+              {kv(t("clip.codec"), info.videoCodec)}
+              {/* Quantas faixas de áudio o ARQUIVO tem, sempre à vista quando é
+                  mais de uma. O usuário de take multi-faixa não tinha como saber
+                  que havia duas sem abrir o menu de contexto — e concluía que o
+                  app "só pegou uma faixa". Agora a informação está onde ele
+                  olha primeiro. */}
+              {kv(
+                t("clip.audio"),
+                hasAudio
+                  ? nTracks > 1
+                    ? `${info.audioCodec ?? "—"} · ${t("clip.nTracks", { n: nTracks })}`
+                    : (info.audioCodec ?? "—")
+                  : t("clip.noAudio"),
+              )}
+              {kv(t("clip.size"), formatSize(info.sizeBytes))}
+            </>
+          ) : null}
+        </div>
+      </Section>
 
       {/* Áudio: só faz sentido se o clipe tiver som. */}
       {hasAudio ? (
-        <>
+        <Section id="audio" title={t("clip.secAudio")} active={audioActive}>
           {/* QUAL faixa do arquivo este clipe toca (o `a:N` do export). Só
               aparece quando há escolha (2+ faixas — o take do LocalRecord com
               mic + sistema); com uma faixa o seletor seria ruído. O nome vem
               do arquivo (title/language); sem nome, "Faixa N". */}
-          {info && info.audioTracks.length > 1 ? (
-            <label className="field">
-              <span>{t("clip.audioTrack")}</span>
-              <select
-                value={c.audioStreamIndex ?? 0}
-                onChange={(e) => doUpdateClip(c.id, { audioStreamIndex: parseInt(e.target.value, 10) })}
-              >
-                {info.audioTracks.map((a) => (
-                  <option key={a.index} value={a.index}>
-                    {trackDisplayName(a) ?? t("track.n", { n: a.index + 1 })}
-                  </option>
-                ))}
-              </select>
-            </label>
+          {info && nTracks > 1 ? (
+            <>
+              <label className="field">
+                <span>{t("clip.audioTrack")}</span>
+                <select
+                  value={c.audioStreamIndex ?? 0}
+                  onChange={(e) => doUpdateClip(c.id, { audioStreamIndex: parseInt(e.target.value, 10) })}
+                >
+                  {/* ORDINAL como `value`, não `a.index` — ver `audioTrackAt`
+                      em lib/probe.ts. Com o índice de stream (1, 2) nenhuma
+                      opção casava com o valor do clipe (0, 1): o seletor
+                      mostrava a mesma faixa pros dois clipes destacados, e
+                      escolher "Microfone" gravava a faixa do sistema. */}
+                  {info.audioTracks.map((a, ord) => (
+                    <option key={ord} value={ord}>
+                      {trackDisplayName(a) ?? t("track.n", { n: ord + 1 })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {/* Honestidade: a prévia não separa as faixas (o webview não deixa
+                  escolher) — o export separa. Ver `usesNonDefaultAudioTrack`. */}
+              <span className="muted small">{t("clip.audioTrackHint")}</span>
+            </>
           ) : null}
           <label className="field-check">
             <input type="checkbox" checked={!!c.muted} onChange={(e) => doUpdateClip(c.id, { muted: e.target.checked })} />
@@ -260,29 +351,44 @@ function MediaFields({
               />
             </label>
           </div>
-        </>
+        </Section>
       ) : (
-        <p className="muted small">{t("clip.noAudioHint")}</p>
+        <Section id="audio" title={t("clip.secAudio")}>
+          <p className="muted small">{t("clip.noAudioHint")}</p>
+        </Section>
       )}
 
-      <Opacity c={c} doUpdateClip={doUpdateClip} />
-      <Envelope
-        c={c}
-        doUpdateClip={doUpdateClip}
-        which="opacityKeyframes"
-        label={t("clip.kfOpacity")}
-        max={1}
-        seed={[
-          { t: 0, v: 0 },
-          { t: 1, v: 1 },
-        ]}
-      />
+      <Section id="video" title={t("clip.secVideo")} active={videoActive}>
+        <Opacity c={c} doUpdateClip={doUpdateClip} />
+        <Envelope
+          c={c}
+          doUpdateClip={doUpdateClip}
+          which="opacityKeyframes"
+          label={t("clip.kfOpacity")}
+          max={1}
+          seed={[
+            { t: 0, v: 0 },
+            { t: 1, v: 1 },
+          ]}
+        />
+      </Section>
 
-      <Speed c={c} doSetSpeed={doSetSpeed} />
-      <Transition c={c} loc={loc} doUpdateClip={doUpdateClip} />
-      <Crop c={c} doUpdateClip={doUpdateClip} />
-      <Motion c={c} doUpdateClip={doUpdateClip} />
-      <Color c={c} doUpdateClip={doUpdateClip} />
+      <Section id="speed" title={t("clip.secSpeed")} active={sp !== 1} summary={`${sp}×`}>
+        <Speed c={c} doSetSpeed={doSetSpeed} />
+      </Section>
+
+      <Section id="trans" title={t("clip.secTransition")} active={hasTransition(loc)}>
+        <Transition c={c} loc={loc} doUpdateClip={doUpdateClip} />
+      </Section>
+
+      <Section id="crop" title={t("clip.secCropPos")} active={cropActive}>
+        <Crop c={c} doUpdateClip={doUpdateClip} />
+        <Motion c={c} doUpdateClip={doUpdateClip} />
+      </Section>
+
+      <Section id="color" title={t("clip.secColor")} active={colorActive}>
+        <Color c={c} doUpdateClip={doUpdateClip} />
+      </Section>
 
       <button
         className="block"
@@ -295,6 +401,12 @@ function MediaFields({
       <p className="muted small">{t("clip.dragHint", { at: formatDuration(playhead) })}</p>
     </div>
   );
+}
+
+/** Há uma transição configurável nesta emenda? (mesma regra do `Transition`) */
+function hasTransition(loc: Located): boolean {
+  const next = loc.track.clips[loc.ci + 1];
+  return !!next && next.path !== undefined && !next.transform && overlapWithNext(loc.track, loc.ci) > 0;
 }
 
 function Opacity({ c, doUpdateClip }: { c: Clip; doUpdateClip: UpdateClip }) {
@@ -347,7 +459,14 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
   // o seletor esconde em vez de oferecer opção que mentiria.
   const next = loc.track.clips[loc.ci + 1];
   const ov = overlapWithNext(loc.track, loc.ci);
-  if (!next || next.path === undefined || next.transform || ov <= 0) return null;
+  // Antes esta seção simplesmente SUMIA quando não havia sobreposição, e o
+  // usuário ficava sem saber pra onde foi a opção de transição (é a queixa
+  // "transição some" do mapa de UI). Agora a seção continua no lugar e EXPLICA
+  // o que fazer pra ela existir: a geometria é a transição — sem os clipes se
+  // sobreporem na régua, não há o que tipar.
+  if (!next || next.path === undefined || next.transform || ov <= 0) {
+    return <p className="muted small">{t("clip.transNone")}</p>;
+  }
   const kind: TransitionKind = c.transitionKind ?? "dissolve";
   return (
     <div className="fields">

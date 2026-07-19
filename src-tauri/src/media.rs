@@ -132,7 +132,16 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
 
     // TODAS as faixas de áudio, com o índice REAL do stream (não a posição na
     // lista de áudios): num arquivo `vídeo, áudio, áudio` o segundo áudio é o
-    // stream 2, e é 2 que o ffmpeg quer no `-map`.
+    // stream 2.
+    //
+    // ATENÇÃO ao ler este campo no front: **`index` NÃO é o que o compilador
+    // usa.** O `lib/args.ts` endereça o áudio pela forma ORDINAL (`[0:a:N]`),
+    // onde N conta só entre os áudios — as mesmas duas faixas acima são a 0 e a
+    // 1, não a 1 e a 2. O `Clip.audioStreamIndex` guarda esse ORDINAL. A UI já
+    // misturou os dois espaços uma vez (v0.7.0): o seletor de faixa do inspetor
+    // listava as opções por `index`, nenhuma casava com o valor do clipe, e os
+    // dois clipes de um take de faixas separadas ficavam indistinguíveis. Quem
+    // converte ordinal → faixa é o `audioTrackAt` de `src/lib/probe.ts`.
     let audio_tracks: Vec<AudioStreamInfo> = streams
         .iter()
         .enumerate()

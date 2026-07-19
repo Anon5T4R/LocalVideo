@@ -43,6 +43,34 @@ export function trackDisplayName(tk: { title: string | null; language: string | 
   return tk.title ?? tk.language ?? null;
 }
 
+/**
+ * A faixa de áudio de ORDINAL `n` — e o motivo desta função existir em vez de um
+ * `.find(a => a.index === n)` espalhado pela UI.
+ *
+ * **São dois espaços de índice diferentes, e a UI misturava os dois** (o bug do
+ * "as faixas separadas parecem iguais"):
+ *
+ * - `AudioTrackInfo.index` é o índice do stream NO CONTAINER. Num arquivo do
+ *   LocalRecord (`vídeo, áudio, áudio`) as duas faixas são os streams **1 e 2**.
+ * - `Clip.audioStreamIndex` é o ORDINAL ENTRE OS ÁUDIOS — o `N` do `[i:a:N]`
+ *   que o compilador escreve (`lib/args.ts`). As mesmas duas faixas são **0 e 1**.
+ *
+ * O `detachAudio` grava 0 e 1 (certo pro export, provado com os tons de teste),
+ * mas o seletor do inspetor listava as opções com `value={a.index}` (1 e 2) e a
+ * régua procurava o nome por `a.index === audioStreamIndex`. Consequências
+ * visíveis: nenhuma opção casava com o valor do clipe (o `<select>` mostrava
+ * "Microfone" pros DOIS clipes), o clipe da faixa 0 ficava SEM etiqueta na régua
+ * e o da faixa 1 recebia o nome da faixa errada — dois clipes indistinguíveis.
+ * Pior: escolher "Microfone" no seletor gravava `audioStreamIndex = 1`, que no
+ * export é a faixa do SISTEMA. Errado no arquivo final, calado.
+ *
+ * Um lugar só, então, pra converter ordinal → faixa: a posição no array. É essa
+ * a ordem em que o Rust coleta os áudios, e é essa que o ffmpeg conta em `a:N`.
+ */
+export function audioTrackAt(tracks: AudioTrackInfo[], ordinal: number): AudioTrackInfo | undefined {
+  return ordinal >= 0 ? tracks[ordinal] : undefined;
+}
+
 /** O que o app usa: o cru + o fps já convertido. */
 /** Uma faixa de áudio dentro do arquivo (espelha `AudioStreamInfo` do Rust). */
 export interface AudioTrackInfo {

@@ -527,6 +527,31 @@ export function addSubtitles(
  * cortar onde não dá (na borda, no vazio) — é não-evento, e devolve a MESMA
  * timeline (assim o `S` nunca "dá erro" e o undo não empilha lixo).
  */
+/**
+ * QUAL clipe o "S" corta. Puro porque é a regra, não o efeito — e porque foi
+ * justamente ela que estava errada.
+ *
+ * Até a v0.7 o `doSplit` perguntava sempre à TRILHA BASE (`baseVideoTrack`):
+ * selecionar um clipe em V2 ou numa trilha de áudio (por exemplo o áudio recém-
+ * separado de um take de duas faixas) e apertar S cortava... o vídeo lá de
+ * baixo, ou nada. O atalho mais usado de um NLE ignorava a seleção.
+ *
+ * A regra nova é a de todo NLE: corta o clipe SELECIONADO, desde que o playhead
+ * esteja dentro dele (fora, não há o que cortar naquele clipe). Sem seleção — ou
+ * com a seleção fora do playhead — cai no comportamento antigo, a trilha base,
+ * pra quem só aperta S enquanto assiste não perder nada.
+ */
+export function splitTargetId(tl: Timeline, selectedId: string | null, at: number): string | null {
+  if (selectedId) {
+    const loc = locate(tl, selectedId);
+    // Título também corta: `splitAt` já sabe dividir os dois (só a mídia ganha
+    // `srcIn` novo). O que ele NÃO faz é cortar em cima da borda — e aí a
+    // condição abaixo já barra antes.
+    if (loc && at > loc.clip.startMs && at < clipEnd(loc.clip)) return selectedId;
+  }
+  return timeToClip(baseVideoTrack(tl), at)?.clip.id ?? null;
+}
+
 export function splitAt(tl: Timeline, id: string, at: number): Timeline {
   const loc = locate(tl, id);
   if (!loc) return tl;
@@ -681,6 +706,61 @@ export function removeClip(tl: Timeline, id: string): Timeline {
   if (!loc) return tl;
   const clips = loc.track.clips.filter((c) => c.id !== id);
   return withTrack(tl, loc.ti, clips);
+}
+
+/**
+ * Remove um clipe FECHANDO o buraco: os que vinham depois dele NA MESMA TRILHA
+ * andam pra trás o tamanho do que saiu. É o "ripple delete" de qualquer NLE.
+ *
+ * O buraco não é detalhe estético: com o modo Ripple LIGADO o aparar já puxava
+ * os vizinhos, mas o `Del` continuava deixando um vazio preto no meio do filme —
+ * duas ferramentas com a mesma promessa e comportamentos opostos, o que ensina o
+ * usuário a não confiar no interruptor. Aqui o `Del` passa a honrar o modo.
+ *
+ * Só a trilha do clipe se move: puxar as OUTRAS trilhas junto dessincronizaria a
+ * música de fundo do vídeo (o ripple global é outra ferramenta, e nem todo NLE a
+ * liga por padrão). Clipes que começam ANTES do removido ficam parados — o
+ * deslocamento é sempre pra quem vinha depois.
+ */
+export function removeClipRipple(tl: Timeline, id: string): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const gone = loc.clip;
+  const shift = clipDuration(gone);
+  const clips = loc.track.clips
+    .filter((c) => c.id !== id)
+    // `>=` e não `>`: um clipe que começa EXATAMENTE onde o removido começava
+    // (sobreposto por crossfade) também vinha "depois" na fila e tem que subir.
+    .map((c) => (c.startMs >= gone.startMs ? { ...c, startMs: Math.max(0, c.startMs - shift) } : c));
+  return withTrack(tl, loc.ti, clips);
+}
+
+/**
+ * Duplica um clipe, pondo a cópia LOGO DEPOIS do original, na mesma trilha, e
+ * empurrando pra frente quem vinha atrás — o Ctrl+D que faltava.
+ *
+ * Empurrar (em vez de sobrepor) é deliberado: uma cópia caindo por cima do
+ * vizinho viraria um crossfade que ninguém pediu (a sobreposição É a transição
+ * neste modelo), e o usuário levaria um efeito de brinde sem saber de onde veio.
+ * Empurrando, o resultado é o que o olho espera: o mesmo trecho, duas vezes.
+ *
+ * A cópia leva TUDO menos a identidade: mesma janela-fonte, volume, fades,
+ * filtros, velocidade, faixa de áudio. `newId()` garante que os dois nunca se
+ * confundam no `locate` (ids iguais fariam a seleção e o arrasto pegarem o
+ * errado).
+ */
+export function duplicateClip(tl: Timeline, id: string): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const src = loc.clip;
+  const dur = clipDuration(src);
+  if (dur <= 0) return tl;
+  const at = clipEnd(src);
+  const copy: Clip = { ...src, id: newId(isTitle(src) ? "t" : "c"), startMs: at };
+  const clips = loc.track.clips.map((c) =>
+    c.id !== id && c.startMs >= at ? { ...c, startMs: c.startMs + dur } : c,
+  );
+  return withTrack(tl, loc.ti, [...clips, copy]);
 }
 
 /**

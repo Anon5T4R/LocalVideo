@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import ClipInspector from "./components/ClipInspector";
+import ContextMenu, { type MenuItem } from "./components/ContextMenu";
 import ExportModal from "./components/ExportModal";
 import Preview from "./components/Preview";
 import SettingsModal from "./components/SettingsModal";
@@ -259,7 +260,8 @@ export default function App() {
       // Com um modal aberto, os atalhos do editor ficam calados: `S` não pode
       // cortar a timeline por trás do diálogo de exportar, nem `Del` sumir com o
       // clipe que a pessoa está prestes a exportar.
-      const modal = useExport.getState().open || useUi.getState().settingsOpen || pending !== null;
+      const ui = useUi.getState();
+      const modal = useExport.getState().open || ui.settingsOpen || ui.menuOpen || pending !== null;
       if (modal) return;
 
       const s = useEditor.getState();
@@ -280,6 +282,11 @@ export default function App() {
       } else if (mod && e.key.toLowerCase() === "i") {
         e.preventDefault();
         void pickAndImport();
+      } else if (mod && e.key.toLowerCase() === "d") {
+        // Ctrl+D = duplicar o clipe selecionado. `preventDefault` obrigatório: no
+        // navegador/webview esse atalho é "adicionar aos favoritos".
+        e.preventDefault();
+        s.doDuplicate();
       } else if (mod && e.key.toLowerCase() === "e") {
         e.preventDefault();
         if (!empty) void useExport.getState().openDialog();
@@ -353,27 +360,50 @@ export default function App() {
 
         <span className="toolbar-fill" />
 
-        <button onClick={() => void pickAndImport()} disabled={ed.importing || !ed.ffmpegOk}>
-          {ed.importing ? t("top.importing") : <><Icon name="plus" /> {t("top.import")}</>}
-        </button>
-        <button onClick={() => guard(() => ed.newProject())}>{t("top.new")}</button>
-        <button onClick={() => guard(() => void doOpen())}>{t("top.open")}</button>
-        <button onClick={() => void doSave(false)} disabled={empty}>
-          {t("top.save")}
-        </button>
-        <button
-          onClick={() => ed.doAddTitle()}
-          disabled={empty}
-          title={`${t("title.add")} (T)`}
-        >
+        {/* A topbar em GRUPOS (v0.7.1). Antes eram 11 botões numa fila só, sem
+            separador e sem `nowrap`: a 1280px SEIS deles quebravam o rótulo em
+            duas linhas e a barra ficava serrilhada — amadora antes de o usuário
+            clicar em nada. Agora: Arquivo ▾ e Importar ▾ recolhem 7 botões em
+            dois menus, os grupos ganham separador, e o Exportar fica isolado do
+            outro lado como a ação primária que é. */}
+        <MenuButton
+          label={t("top.menuFile")}
+          items={[
+            { label: t("top.new"), hint: "", onClick: () => guard(() => ed.newProject()) },
+            { label: t("top.open"), hint: "Ctrl+O", onClick: () => guard(() => void doOpen()) },
+            { label: t("top.save"), hint: "Ctrl+S", onClick: () => void doSave(false), disabled: empty, divider: true },
+            { label: t("top.saveAs"), hint: "Ctrl+Shift+S", onClick: () => void doSave(true), disabled: empty },
+          ]}
+        />
+        <MenuButton
+          label={t("top.menuImport")}
+          disabled={!ed.ffmpegOk}
+          items={[
+            {
+              label: ed.importing ? t("top.importing") : t("top.importMedia"),
+              hint: "Ctrl+I",
+              onClick: () => void pickAndImport(),
+              disabled: ed.importing || !ed.ffmpegOk,
+            },
+            { label: t("mk.import"), onClick: () => void doImportMarkers(), disabled: empty, divider: true },
+            { label: t("sub.import"), onClick: () => void doImportSubtitles(), disabled: empty },
+          ]}
+        />
+        <button onClick={() => ed.doAddTitle()} disabled={empty} title={`${t("title.add")} (T)`}>
           <Icon name="subtitle" /> {t("title.add")}
         </button>
-        <button onClick={() => void doImportMarkers()} disabled={empty} title={t("mk.import")}>
-          <Icon name="check" /> {t("mk.import")}
+
+        <span className="top-sep" aria-hidden />
+
+        <button onClick={() => ed.doUndo()} disabled={!ed.canUndo()} title={`${t("top.undo")} (Ctrl+Z)`}>
+          <Icon name="undo" label={t("top.undo")} />
         </button>
-        <button onClick={() => void doImportSubtitles()} disabled={empty} title={t("sub.import")}>
-          <Icon name="subtitle" /> {t("sub.import")}
+        <button onClick={() => ed.doRedo()} disabled={!ed.canRedo()} title={`${t("top.redo")} (Ctrl+Y)`}>
+          <Icon name="redo" label={t("top.redo")} />
         </button>
+
+        <span className="top-sep" aria-hidden />
+
         <button
           className="primary"
           onClick={() => void useExport.getState().openDialog()}
@@ -381,12 +411,6 @@ export default function App() {
           title={`${t("sc.export")} (Ctrl+E)`}
         >
           <Icon name="export" /> {t("top.export")}
-        </button>
-        <button onClick={() => ed.doUndo()} disabled={!ed.canUndo()} title={`${t("top.undo")} (Ctrl+Z)`}>
-          <Icon name="undo" label={t("top.undo")} />
-        </button>
-        <button onClick={() => ed.doRedo()} disabled={!ed.canRedo()} title={`${t("top.redo")} (Ctrl+Y)`}>
-          <Icon name="redo" label={t("top.redo")} />
         </button>
         <button onClick={() => setSettingsOpen(true)} title={t("top.settingsTitle")}>
           <Icon name="settings" label={t("top.settingsTitle")} />
@@ -486,5 +510,60 @@ export default function App() {
       <SettingsModal />
       <Toasts />
     </div>
+  );
+}
+
+/**
+ * Um botão de menu da topbar (Arquivo ▾, Importar ▾).
+ *
+ * Reusa o `ContextMenu` de propósito: ele já resolve o que todo menu erra —
+ * fechar no clique fora, fechar no Esc e não vazar da tela. A única diferença é
+ * a origem: aqui a posição vem do RETÂNGULO do botão (abre colado embaixo dele),
+ * não do ponteiro.
+ *
+ * Enquanto está aberto, `menuOpen` no `ui` CALA os atalhos do editor — senão o
+ * "S" de quem navega o menu com o teclado cortaria a timeline por baixo (o
+ * mesmo gotcha que o modal de exportação já tinha resolvido).
+ */
+function MenuButton({
+  label,
+  items,
+  disabled,
+}: {
+  label: string;
+  items: MenuItem[];
+  disabled?: boolean;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const setMenuOpen = useUi((s) => s.setMenuOpen);
+
+  const close = useCallback(() => {
+    setAt(null);
+    setMenuOpen(false);
+  }, [setMenuOpen]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        className={`top-menu-btn ${at ? "on" : ""}`}
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onClick={() => {
+          if (at) {
+            close();
+            return;
+          }
+          const r = btnRef.current?.getBoundingClientRect();
+          setAt({ x: r?.left ?? 0, y: (r?.bottom ?? 0) + 4 });
+          setMenuOpen(true);
+        }}
+      >
+        {label} <span className="top-caret" aria-hidden>▾</span>
+      </button>
+      {at ? <ContextMenu x={at.x} y={at.y} items={items} onClose={close} /> : null}
+    </>
   );
 }
