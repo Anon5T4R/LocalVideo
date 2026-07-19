@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../lib/i18n";
 import Icon from "./Icon";
 import ContextMenu, { type MenuItem } from "./ContextMenu";
-import { formatDuration, nearestThumb } from "../lib/probe";
+import { formatDuration, nearestThumb, trackDisplayName } from "../lib/probe";
+import type { MediaInfo } from "../lib/probe";
 import { snapMove, snapValue } from "../lib/snap";
 import {
   clipDuration,
@@ -81,6 +82,7 @@ export default function Timeline() {
   const setRippleMode = useEditor((s) => s.setRippleMode);
   const doDetachAudio = useEditor((s) => s.doDetachAudio);
   const doAddTitle = useEditor((s) => s.doAddTitle);
+  const importEmbeddedSubtitles = useEditor((s) => s.importEmbeddedSubtitles);
   const [menu, setMenu] = useState<{ x: number; y: number; clip: Clip } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -97,6 +99,32 @@ export default function Timeline() {
   const width = Math.max(msToPx(total), 1);
 
   const clipCount = timeline.tracks.reduce((n, tk) => n + tk.clips.length, 0);
+
+  // Cabeçalho de cada trilha: "V1/V2…" pra vídeo, "A1/A2…" pra áudio, numerado
+  // POR TIPO (é como todo NLE nomeia — "trilha 3" não diz nada; "A2" diz).
+  const laneLabels = useMemo(() => {
+    const m = new Map<string, { label: string; hint: string }>();
+    let v = 0;
+    let a = 0;
+    for (const tk of timeline.tracks) {
+      if (tk.kind === "video") m.set(tk.id, { label: `V${++v}`, hint: t("tl.laneVideo", { n: v }) });
+      else m.set(tk.id, { label: `A${++a}`, hint: t("tl.laneAudio", { n: a }) });
+    }
+    return m;
+  }, [timeline]);
+
+  /** Nome da FAIXA-FONTE de um clipe de áudio destacado ("Microfone", "Áudio do
+   *  sistema") — só quando o arquivo tem 2+ faixas (com uma, o nome não
+   *  distingue nada). É o que deixa dois clipes idênticos na régua dizerem qual
+   *  é qual sem abrir o inspetor. */
+  const sourceTrackName = (track: Track, c: Clip): string | undefined => {
+    if (track.kind !== "audio" || !c.path) return undefined;
+    const tracks = media[c.path]?.audioTracks;
+    if (!tracks || tracks.length < 2) return undefined;
+    const idx = c.audioStreamIndex ?? 0;
+    const info = tracks.find((a) => a.index === idx);
+    return info ? (trackDisplayName(info) ?? t("track.n", { n: idx + 1 })) : undefined;
+  };
 
   /* ---- o arrasto (mover / aparar / transição), tudo por pointer ---- */
   useEffect(() => {
@@ -259,7 +287,10 @@ export default function Timeline() {
                 if (e.target === e.currentTarget) seekFromEvent(e);
               }}
             >
-              <span className="tl-lane-badge muted"><Icon name={track.kind === "video" ? "addVideo" : "addAudio"} /></span>
+              <span className="tl-lane-badge muted" title={laneLabels.get(track.id)?.hint}>
+                <Icon name={track.kind === "video" ? "addVideo" : "addAudio"} />
+                <em>{laneLabels.get(track.id)?.label}</em>
+              </span>
               {track.clips.map((c, i) => (
                 <ClipView
                   key={c.id}
@@ -271,6 +302,7 @@ export default function Timeline() {
                   gone={c.path ? missing.includes(c.path) : false}
                   strip={c.path ? thumbs[c.path] : undefined}
                   hasInfo={c.path ? !!media[c.path] : false}
+                  srcTrackName={sourceTrackName(track, c)}
                   onSelect={() => select(c.id)}
                   onBodyDown={(e) =>
                     beginDrag(e, {
@@ -337,6 +369,9 @@ export default function Timeline() {
             detach: () => doDetachAudio(menu.clip.id),
             addTitle: doAddTitle,
             remove: () => doRemove(menu.clip.id),
+            importSub: (ordinal) => {
+              if (menu.clip.path) void importEmbeddedSubtitles(menu.clip.path, ordinal);
+            },
           })}
         />
       ) : null}
@@ -349,8 +384,14 @@ export default function Timeline() {
  *  do componente pra ser testável e pra não remontar a cada render. */
 function clipMenuItems(
   clip: Clip,
-  media: Record<string, { audioTracks: { index: number }[] }>,
-  act: { split: () => void; detach: () => void; addTitle: () => void; remove: () => void },
+  media: Record<string, Pick<MediaInfo, "audioTracks"> & Partial<Pick<MediaInfo, "subtitleTracks">>>,
+  act: {
+    split: () => void;
+    detach: () => void;
+    addTitle: () => void;
+    remove: () => void;
+    importSub: (ordinal: number) => void;
+  },
 ): MenuItem[] {
   const info = clip.path ? media[clip.path] : undefined;
   const nAudio = info?.audioTracks.length ?? 0;
@@ -358,9 +399,20 @@ function clipMenuItems(
   const canDetach = isMedia(clip) && nAudio > 0 && !clip.muted;
   const detachLabel =
     nAudio > 1 ? t("tl.ctxDetachN", { n: String(nAudio) }) : t("tl.ctxDetach");
+  // Legendas EMBUTIDAS no arquivo deste clipe: um item por faixa, com o nome que
+  // veio no container (title/language; sem nome, "Faixa N"). Só existe quando o
+  // probe viu faixa — vídeo sem legenda não ganha item cinza à toa.
+  const subs = (isMedia(clip) ? (info?.subtitleTracks ?? []) : []).map((s, i) => ({
+    label: t("sub.ctxEmbedded", {
+      name: trackDisplayName(s) ?? t("track.n", { n: s.index + 1 }),
+    }),
+    onClick: () => act.importSub(s.index),
+    divider: i === 0,
+  }));
   return [
     { label: t("tl.split"), onClick: act.split, disabled: !isMedia(clip) },
     { label: detachLabel, onClick: act.detach, disabled: !canDetach },
+    ...subs,
     { label: t("title.add"), onClick: act.addTitle, divider: true },
     { label: t("tl.remove"), onClick: act.remove, danger: true, divider: true },
   ];
@@ -375,6 +427,8 @@ interface ClipViewProps {
   gone: boolean;
   strip: { timesMs: number[]; urls: string[] } | undefined;
   hasInfo: boolean;
+  /** Nome da faixa-fonte (clipe de áudio destacado de arquivo multi-faixa). */
+  srcTrackName?: string;
   onSelect: () => void;
   onBodyDown: (e: React.PointerEvent) => void;
   onInDown: (e: React.PointerEvent) => void;
@@ -412,7 +466,13 @@ function ClipView(p: ClipViewProps) {
       }}
       onPointerDown={p.onBodyDown}
       onContextMenu={p.onContext}
-      title={isTitle(c) ? c.title!.text : baseName(c.path ?? "")}
+      title={
+        isTitle(c)
+          ? c.title!.text
+          : p.srcTrackName
+            ? `${baseName(c.path ?? "")} · ${p.srcTrackName}`
+            : baseName(c.path ?? "")
+      }
     >
       {isMedia(c) ? (
         <div className="tl-thumbs" aria-hidden>
@@ -432,6 +492,7 @@ function ClipView(p: ClipViewProps) {
 
       <div className="tl-clip-label">
         <span>{isTitle(c) ? `“${c.title!.text}”` : baseName(c.path ?? "")}</span>
+        {p.srcTrackName ? <span className="tl-srctrack">{p.srcTrackName}</span> : null}
         <span className="muted">{formatDuration(clipDuration(c))}</span>
         {isMedia(c) && p.hasInfo && !p.strip ? <span className="muted">· {t("tl.noThumbs")}</span> : null}
       </div>

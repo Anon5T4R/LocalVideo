@@ -19,8 +19,28 @@ export interface RawMediaInfo {
    *  Um take do LocalRecord com faixas separadas traz duas (mic + sistema) —
    *  antes o app via só a primeira e a segunda sumia na importação. */
   audioTracks: AudioTrackInfo[];
+  /** Legendas EMBUTIDAS no container (srt/mov_text). Opcional porque um
+   *  `.tvproj` salvo antes desta versão não traz o campo — leia com `?? []`. */
+  subtitleTracks?: SubtitleTrackInfo[];
   streamCount: number;
   sizeBytes: number;
+}
+
+/** Uma faixa de legenda embutida (espelha `SubtitleStreamInfo` do Rust). */
+export interface SubtitleTrackInfo {
+  /** Índice ORDINAL entre as legendas — o `s:N` do `-map 0:s:N` da extração. */
+  index: number;
+  codec: string;
+  title: string | null;
+  language: string | null;
+}
+
+/** Nome de EXIBIÇÃO de uma faixa (áudio ou legenda): o título que veio no
+ *  arquivo, senão o idioma, senão `null` — e aí a UI mostra "Faixa N"
+ *  (`t("track.n")`), nunca um campo vazio. Num lugar só porque o inspetor, o
+ *  menu de contexto e o rótulo do clipe têm que concordar no nome. */
+export function trackDisplayName(tk: { title: string | null; language: string | null }): string | null {
+  return tk.title ?? tk.language ?? null;
 }
 
 /** O que o app usa: o cru + o fps já convertido. */

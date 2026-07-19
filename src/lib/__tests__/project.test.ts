@@ -114,6 +114,43 @@ describe(".tvproj v2", () => {
     expect(parseProject(doc).timeline.tracks[0].clips[0].transitionKind).toBeUndefined();
   });
 
+  it("guarda e reabre a FAIXA de áudio de cada clipe (audioStreamIndex)", () => {
+    // O cenário do take do LocalRecord: áudio separado em dois clipes, um por
+    // faixa. Sem o round-trip, salvar e reabrir devolvia os DOIS apontando pra
+    // faixa 0 — o "Áudio do sistema" virava um segundo microfone, calado, e só
+    // no export alguém notava.
+    const detached: Timeline = {
+      version: 2,
+      tracks: [
+        {
+          id: "v1",
+          kind: "video",
+          clips: [{ id: "a", startMs: 0, durationMs: 2000, path: "C:\\take.mp4", srcIn: 0, muted: true }],
+        },
+        {
+          id: "a1",
+          kind: "audio",
+          clips: [{ id: "m", startMs: 0, durationMs: 2000, path: "C:\\take.mp4", srcIn: 0, audioStreamIndex: 0 }],
+        },
+        {
+          id: "a2",
+          kind: "audio",
+          clips: [{ id: "s", startMs: 0, durationMs: 2000, path: "C:\\take.mp4", srcIn: 0, audioStreamIndex: 1 }],
+        },
+      ],
+    };
+    const back = parseProject(serializeProject(detached, { "C:\\take.mp4": info("C:\\take.mp4") }));
+    expect(back.timeline).toEqual(detached);
+
+    // Índice inventado no disco (negativo/não-número) NÃO entra: o clipe cai na
+    // faixa 0 implícita em vez de mandar um `a:-2` pro ffmpeg.
+    const doc =
+      '{"app":"LocalVideo","version":2,"media":{},"tracks":[' +
+      '{"id":"v1","kind":"video","clips":[]},{"id":"a1","kind":"audio","clips":[' +
+      '{"id":"x","startMs":0,"durationMs":1000,"path":"v.mp4","srcIn":0,"audioStreamIndex":-2}]}]}';
+    expect(parseProject(doc).timeline.tracks[1].clips[0].audioStreamIndex).toBeUndefined();
+  });
+
   it("ignora filtros malformados no disco (não abre pela metade com lixo)", () => {
     const doc =
       '{"app":"LocalVideo","version":2,"media":{},"tracks":[{"id":"v1","kind":"video","clips":[' +

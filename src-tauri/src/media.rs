@@ -37,6 +37,10 @@ pub struct MediaInfo {
     /// separadas traz duas aqui (microfone + áudio do sistema) — antes o app via
     /// só a primeira e a segunda sumia na importação sem aviso.
     pub audio_tracks: Vec<AudioStreamInfo>,
+    /// Faixas de LEGENDA embutidas no container (srt no MKV, mov_text no MP4).
+    /// Antes o app só importava legenda de arquivo externo — a embutida existia
+    /// no probe (`stream_count`) e sumia calada. A UI oferece extrair cada uma.
+    pub subtitle_tracks: Vec<SubtitleStreamInfo>,
     /// Total de streams do container (vídeo + áudio + legenda + dados).
     pub stream_count: usize,
     pub size_bytes: u64,
@@ -57,8 +61,44 @@ pub struct AudioStreamInfo {
     pub language: Option<String>,
 }
 
+/// Uma faixa de legenda dentro do arquivo.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleStreamInfo {
+    /// Índice ORDINAL entre as legendas (o `s:N` do `-map 0:s:N`), não o índice
+    /// absoluto do stream — a extração mapeia por ordinal, então é ele que serve.
+    pub index: u32,
+    pub codec: String,
+    pub title: Option<String>,
+    pub language: Option<String>,
+}
+
 fn get_str(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+/// Uma tag de metadata do stream ("title", "language"), se existir e não for vazia.
+fn stream_tag(s: &serde_json::Value, k: &str) -> Option<String> {
+    s.get("tags")
+        .and_then(|t| t.get(k))
+        .and_then(|x| x.as_str())
+        .map(|x| x.to_string())
+        .filter(|x| !x.is_empty())
+}
+
+/// O nome de exibição de uma faixa: `tags.title`, com fallback pro
+/// `handler_name` quando ele não é o genérico do muxer.
+///
+/// O porquê (medido com o ffmpeg embarcado, não suposto): **o muxer MP4 descarta
+/// o `title` por stream** — um take do LocalRecord remuxado MKV→MP4 chega aqui
+/// sem os nomes "Microfone"/"Áudio do sistema", mesmo que o MKV os tivesse. O
+/// jeito que SOBREVIVE no MP4 é o `handler_name` (o handler do QuickTime), que
+/// players e o próprio ffprobe devolvem — só que por padrão ele vem preenchido
+/// com lixo genérico ("SoundHandler"). Então: title primeiro; handler_name só
+/// quando alguém o setou de propósito (não termina em "Handler").
+fn stream_title(s: &serde_json::Value) -> Option<String> {
+    stream_tag(s, "title")
+        .or_else(|| stream_tag(s, "handler_name").filter(|h| !h.ends_with("Handler")))
 }
 
 /// Número que o ffprobe manda como string ("12.345678") ou como número.
@@ -97,21 +137,26 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
         .iter()
         .enumerate()
         .filter(|(_, s)| get_str(s, "codec_type") == "audio")
-        .map(|(idx, s)| {
-            let tags = s.get("tags");
-            let tag = |k: &str| {
-                tags.and_then(|t| t.get(k))
-                    .and_then(|x| x.as_str())
-                    .map(|x| x.to_string())
-                    .filter(|x| !x.is_empty())
-            };
-            AudioStreamInfo {
-                index: idx as u32,
-                codec: get_str(s, "codec_name"),
-                channels: s.get("channels").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-                title: tag("title"),
-                language: tag("language"),
-            }
+        .map(|(idx, s)| AudioStreamInfo {
+            index: idx as u32,
+            codec: get_str(s, "codec_name"),
+            channels: s.get("channels").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+            title: stream_title(s),
+            language: stream_tag(s, "language"),
+        })
+        .collect();
+
+    // Legendas embutidas, indexadas pelo ORDINAL (`s:N`): é assim que o
+    // `-map 0:s:N` da extração as endereça.
+    let subtitle_tracks: Vec<SubtitleStreamInfo> = streams
+        .iter()
+        .filter(|s| get_str(s, "codec_type") == "subtitle")
+        .enumerate()
+        .map(|(ord, s)| SubtitleStreamInfo {
+            index: ord as u32,
+            codec: get_str(s, "codec_name"),
+            title: stream_title(s),
+            language: stream_tag(s, "language"),
         })
         .collect();
 
@@ -131,6 +176,7 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
         audio_codec: audio.map(|a| get_str(a, "codec_name")),
         has_audio: audio.is_some(),
         audio_tracks,
+        subtitle_tracks,
         stream_count: streams.len(),
         size_bytes: get_f64(&format, "size").unwrap_or(0.0).max(0.0) as u64,
     })
@@ -183,6 +229,29 @@ pub fn probe_keyframes(app: tauri::AppHandle, args: Vec<String>) -> Result<Strin
     let out = cmd.output().map_err(|_| "probe-failed".to_string())?;
     if !out.status.success() {
         return Err("probe-failed".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Roda o ffmpeg e devolve o STDOUT como texto — é a extração de legenda
+/// embutida (`-map 0:s:N -f srt -`), que sai pelo stdout de propósito: sem
+/// arquivo temporário pra criar, escopar e limpar.
+///
+/// Os args vêm do front (`subtitleExtractArgs` em `src/lib/subtitles.ts`,
+/// testado contra o binário real) — regra da casa: o Rust move bytes.
+#[tauri::command(async)]
+pub fn extract_text(app: tauri::AppHandle, args: Vec<String>) -> Result<String, String> {
+    let bin = resolve_bin(&app, FFMPEG_BIN).map_err(|_| "no-runtime".to_string())?;
+    let mut cmd = Command::new(&bin);
+    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"])
+        .args(&args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+
+    let out = cmd.output().map_err(|_| "extract-failed".to_string())?;
+    if !out.status.success() {
+        return Err("extract-failed".into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
@@ -382,6 +451,62 @@ mod tests {
         assert_eq!(i.audio_tracks[0].channels, 2);
         // `audio_codec` (o campo antigo) segue apontando pra primeira faixa.
         assert_eq!(i.audio_codec.as_deref(), Some("aac"));
+    }
+
+    /// Um take remuxado pra MP4: o muxer descartou os `title` (comportamento
+    /// medido do mov muxer), mas o `handler_name` setado de propósito sobrevive
+    /// — e o genérico "SoundHandler" NÃO pode virar nome de faixa na UI.
+    const MP4_HANDLER: &str = r#"{
+      "format": { "duration": "50.0" },
+      "streams": [
+        { "codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080,
+          "r_frame_rate": "30/1", "avg_frame_rate": "30/1",
+          "tags": { "handler_name": "VideoHandler" } },
+        { "codec_type": "audio", "codec_name": "aac", "channels": 2,
+          "tags": { "handler_name": "Microfone" } },
+        { "codec_type": "audio", "codec_name": "aac", "channels": 2,
+          "tags": { "handler_name": "SoundHandler" } }
+      ]
+    }"#;
+
+    #[test]
+    fn handler_name_e_fallback_de_titulo_menos_o_generico() {
+        let i = info_from_probe_json("C:/take.mp4", MP4_HANDLER).unwrap();
+        assert_eq!(i.audio_tracks[0].title.as_deref(), Some("Microfone"));
+        // "SoundHandler" é o lixo padrão do muxer, não um nome: fica None e a
+        // UI mostra "Faixa 2" em vez de mentir um título.
+        assert_eq!(i.audio_tracks[1].title, None);
+    }
+
+    /// Legendas embutidas: o índice é o ORDINAL entre legendas (o `s:N` do
+    /// `-map`), não o índice absoluto do stream — num arquivo
+    /// `vídeo, áudio, legenda, legenda` a segunda legenda é `s:1`, stream 3.
+    const COM_LEGENDAS: &str = r#"{
+      "format": { "duration": "10.0" },
+      "streams": [
+        { "codec_type": "video", "codec_name": "h264", "width": 640, "height": 480,
+          "r_frame_rate": "30/1", "avg_frame_rate": "30/1" },
+        { "codec_type": "audio", "codec_name": "aac", "channels": 2 },
+        { "codec_type": "subtitle", "codec_name": "subrip",
+          "tags": { "title": "Português", "language": "por" } },
+        { "codec_type": "subtitle", "codec_name": "mov_text",
+          "tags": { "language": "eng" } }
+      ]
+    }"#;
+
+    #[test]
+    fn le_as_faixas_de_legenda_com_indice_ordinal() {
+        let i = info_from_probe_json("C:/v.mkv", COM_LEGENDAS).unwrap();
+        assert_eq!(i.subtitle_tracks.len(), 2);
+        assert_eq!(i.subtitle_tracks[0].index, 0);
+        assert_eq!(i.subtitle_tracks[1].index, 1);
+        assert_eq!(i.subtitle_tracks[0].title.as_deref(), Some("Português"));
+        assert_eq!(i.subtitle_tracks[0].language.as_deref(), Some("por"));
+        assert_eq!(i.subtitle_tracks[1].title, None);
+        assert_eq!(i.subtitle_tracks[1].codec, "mov_text");
+        // E o resto não muda: 4 streams, 1 áudio.
+        assert_eq!(i.stream_count, 4);
+        assert_eq!(i.audio_tracks.len(), 1);
     }
 
     #[test]

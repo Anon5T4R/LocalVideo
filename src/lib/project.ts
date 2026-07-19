@@ -174,6 +174,13 @@ function parseClip(raw: unknown): Clip {
   }
   // Propriedades opcionais de áudio/vídeo, só se forem números/booleanos sãos.
   if (typeof c.muted === "boolean") base.muted = c.muted;
+  // A FAIXA de áudio do clipe (o `a:N`). Faltava aqui e era bug de verdade:
+  // separar as duas faixas de um take, salvar e reabrir devolvia os dois clipes
+  // apontando pra faixa 0 — o "Áudio do sistema" virava um segundo microfone,
+  // calado, e só no export alguém notava.
+  if (Number.isFinite(c.audioStreamIndex) && (c.audioStreamIndex as number) >= 0) {
+    base.audioStreamIndex = Math.round(c.audioStreamIndex as number);
+  }
   if (Number.isFinite(c.volume)) base.volume = c.volume as number;
   if (Number.isFinite(c.fadeInMs)) base.fadeInMs = Math.max(0, Math.round(c.fadeInMs as number));
   if (Number.isFinite(c.fadeOutMs)) base.fadeOutMs = Math.max(0, Math.round(c.fadeOutMs as number));

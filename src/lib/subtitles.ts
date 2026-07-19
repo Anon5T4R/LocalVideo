@@ -24,6 +24,21 @@ export interface SubCue {
   text: string;
 }
 
+/**
+ * Args do ffmpeg pra extrair uma legenda EMBUTIDA como SRT no stdout.
+ *
+ * `-map 0:s:N` endereça pelo ordinal ENTRE legendas (o `index` do
+ * `SubtitleTrackInfo`), não pelo índice absoluto do stream. `-f srt -` converte
+ * o que estiver lá (mov_text do MP4, subrip do MKV) pro texto que o
+ * `parseSubtitles` daqui já entende — a extração desemboca no MESMO parser do
+ * arquivo externo, um caminho só. Provado com o binário real em
+ * `__tests__/multitrack.real.test.ts`.
+ */
+export function subtitleExtractArgs(path: string, ordinal: number): string[] {
+  const n = Math.max(0, Math.round(ordinal));
+  return ["-i", path, "-map", `0:s:${n}`, "-f", "srt", "-"];
+}
+
 /** `HH:MM:SS,mmm` ou `HH:MM:SS.mmm` (o VTT admite `MM:SS.mmm` sem a hora). */
 function parseTimestamp(s: string): number | null {
   const m = s.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})$/);

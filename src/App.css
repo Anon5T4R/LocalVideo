@@ -961,14 +961,39 @@ kbd {
 .tl-lane.audio {
   background: color-mix(in srgb, var(--accent) 5%, var(--bg));
 }
+/* Cabeçalho da trilha: ícone + "V1"/"A1". Vira um chip com fundo pra continuar
+   legível quando um clipe passa por baixo dele. */
 .tl-lane-badge {
   position: absolute;
-  top: 2px;
+  top: 3px;
   left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
   font-size: 11px;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.6;
+  opacity: 0.75;
+}
+.tl-lane-badge em {
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+/* Nome da faixa-fonte num clipe de áudio destacado ("Microfone", "Áudio do
+   sistema"): o que diz qual clipe é qual sem abrir o inspetor. */
+.tl-srctrack {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+  font-weight: 600;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Na v0.2 o clipe é POSICIONADO no tempo (left = startMs), não empilhado por
    flex. Por isso vira absoluto dentro da lane. */

@@ -69,6 +69,7 @@ pub fn run() {
             media::probe_keyframes,
             media::thumbs,
             media::allow_media,
+            media::extract_text,
             project::project_save,
             project::project_open,
             project::paths_exist

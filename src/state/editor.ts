@@ -4,7 +4,7 @@ import { create } from "zustand";
 
 import { t } from "../lib/i18n";
 import { applyMarkers, MarkerParseError, parseMarkers } from "../lib/markers";
-import { parseSubtitles } from "../lib/subtitles";
+import { parseSubtitles, subtitleExtractArgs } from "../lib/subtitles";
 import { thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
 import { parseProject, ProjectParseError, serializeProject } from "../lib/project";
 import {
@@ -126,6 +126,9 @@ interface EditorState {
   importMarkers: (json: string) => void;
   /** Importa legendas SRT/VTT como clipes de título editáveis. */
   importSubtitles: (raw: string) => void;
+  /** Extrai uma legenda EMBUTIDA de um vídeo importado (ordinal `s:N`) e a
+   *  importa pelo mesmo caminho do arquivo externo. */
+  importEmbeddedSubtitles: (path: string, ordinal: number) => Promise<void>;
 
   newProject: () => void;
   openProject: (path: string) => Promise<void>;
@@ -432,6 +435,19 @@ export const useEditor = create<EditorState>((set, get) => ({
     const next = addSubtitles(history.present, cues);
     set({ history: pushHistory(history, next), dirty: true });
     useUi.getState().pushToast("info", t("sub.imported", { n: String(cues.length) }));
+  },
+
+  importEmbeddedSubtitles: async (path, ordinal) => {
+    let raw: string;
+    try {
+      // O ffmpeg converte a faixa (mov_text/subrip) pra SRT no stdout; daqui em
+      // diante o caminho é O MESMO do arquivo externo (parseSubtitles → clipes).
+      raw = await invoke<string>("extract_text", { args: subtitleExtractArgs(path, ordinal) });
+    } catch {
+      useUi.getState().pushToast("error", t("sub.extractFailed"));
+      return;
+    }
+    get().importSubtitles(raw);
   },
 
   importMarkers: (json) => {

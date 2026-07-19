@@ -1,7 +1,7 @@
 import { useRef } from "react";
 
 import { t } from "../lib/i18n";
-import { formatDuration, formatSize } from "../lib/probe";
+import { formatDuration, formatSize, trackDisplayName } from "../lib/probe";
 import {
   clipDuration,
   clipSpeed,
@@ -189,6 +189,25 @@ function MediaFields({
       {/* Áudio: só faz sentido se o clipe tiver som. */}
       {hasAudio ? (
         <>
+          {/* QUAL faixa do arquivo este clipe toca (o `a:N` do export). Só
+              aparece quando há escolha (2+ faixas — o take do LocalRecord com
+              mic + sistema); com uma faixa o seletor seria ruído. O nome vem
+              do arquivo (title/language); sem nome, "Faixa N". */}
+          {info && info.audioTracks.length > 1 ? (
+            <label className="field">
+              <span>{t("clip.audioTrack")}</span>
+              <select
+                value={c.audioStreamIndex ?? 0}
+                onChange={(e) => doUpdateClip(c.id, { audioStreamIndex: parseInt(e.target.value, 10) })}
+              >
+                {info.audioTracks.map((a) => (
+                  <option key={a.index} value={a.index}>
+                    {trackDisplayName(a) ?? t("track.n", { n: a.index + 1 })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="field-check">
             <input type="checkbox" checked={!!c.muted} onChange={(e) => doUpdateClip(c.id, { muted: e.target.checked })} />
             <span>{t("clip.mute")}</span>
