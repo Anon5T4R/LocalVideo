@@ -8,6 +8,7 @@ import ClipInspector from "./components/ClipInspector";
 import ContextMenu, { type MenuItem } from "./components/ContextMenu";
 import ExportModal from "./components/ExportModal";
 import HelpModal from "./components/HelpModal";
+import MediaPool, { poolRectAt } from "./components/MediaPool";
 import Preview from "./components/Preview";
 import SettingsModal from "./components/SettingsModal";
 import Timeline from "./components/Timeline";
@@ -22,10 +23,40 @@ import { useUi } from "./state/ui";
 
 const VIDEO_EXT = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "mpg", "mpeg", "wmv", "ts", "flv"];
 
+/**
+ * O arquivo que o SO está arrastando está sobre o PAINEL de mídia?
+ *
+ * O drop nativo do Tauri não entrega alvo de DOM — só uma coordenada. E a
+ * coordenada vem em pixels FÍSICOS (`PhysicalPosition`), enquanto o
+ * `getBoundingClientRect` fala em pixels CSS: sem dividir pelo
+ * `devicePixelRatio`, numa tela a 150% (o padrão do Windows em notebook) o ponto
+ * cairia 1,5× mais pra direita e pra baixo do que o dedo está — o painel só
+ * aceitaria drop no seu canto superior esquerdo, e o resto viraria import na
+ * timeline "sem motivo".
+ */
+/** Há trabalho neste projeto — clipe na régua OU arquivo no pool. É o que
+ *  decide se jogar o projeto fora (Novo/Abrir/fechar a janela) precisa perguntar
+ *  antes. Num lugar só porque o `guard` e o `onCloseRequested` têm que
+ *  concordar: se discordarem, um dos dois caminhos perde trabalho calado. */
+function hasWork(s: { history: { present: Parameters<typeof timelineDuration>[0] }; media: object }): boolean {
+  return timelineDuration(s.history.present) > 0 || Object.keys(s.media).length > 0;
+}
+
+function overPool(pos: { x: number; y: number } | undefined): boolean {
+  if (!pos) return false;
+  const dpr = window.devicePixelRatio || 1;
+  return poolRectAt(pos.x / dpr, pos.y / dpr);
+}
+
 export default function App() {
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
+  const poolOpen = useUi((s) => s.poolOpen);
   const ed = useEditor();
-  const [dropping, setDropping] = useState(false);
+  /** Há um arquivo do SO pairando sobre a janela — e SOBRE ONDE. O alvo importa
+   *  desde a v0.11: soltar no painel de mídia importa pro pool SEM criar clipe;
+   *  soltar em qualquer outro lugar mantém o fluxo rápido de sempre (entra na
+   *  timeline). `null` = não há nada pairando. */
+  const [dropping, setDropping] = useState<null | "pool" | "app">(null);
   /** Uma ação represada esperando o usuário decidir o que fazer com o projeto
    *  não salvo. `null` = não há diálogo aberto. */
   const [pending, setPending] = useState<null | (() => void)>(null);
@@ -35,7 +66,20 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** Não há CLIPE na timeline. É o que cala o exportar, o título e os
+   *  marcadores — todos falam sobre a régua, não sobre o pool. */
   const empty = clipCount(ed.history.present) === 0;
+  /**
+   * Não há clipe NEM arquivo no pool: o projeto está de fato em branco, e é só
+   * aí que a tela-cartaz ("sua timeline está vazia") aparece.
+   *
+   * A distinção nasceu com o painel (v0.11): soltar arquivos NELE importa sem
+   * criar clipe, então passou a existir um projeto com cinco takes dentro e a
+   * régua vazia. Com o critério antigo, o app responderia a esse import com a
+   * tela de "importe um vídeo" — escondendo justamente os arquivos que a pessoa
+   * acabou de trazer, e sem lugar de onde arrastá-los pra régua.
+   */
+  const blank = empty && Object.keys(ed.media).length === 0;
 
   /* ---------------- arquivos ---------------- */
 
@@ -108,10 +152,14 @@ export default function App() {
    *  aqui primeiro. Sem projeto sujo, segue direto — o diálogo não aparece à toa. */
   const guard = useCallback(
     (action: () => void) => {
-      if (!ed.dirty || timelineDuration(ed.history.present) === 0) action();
+      // "Não há nada a perder" passou a incluir o POOL (v0.11): antes o teste era
+      // só a duração da timeline, então um projeto com dez arquivos importados e
+      // a régua ainda vazia era tratado como projeto em branco — Ctrl+O jogava a
+      // importação inteira fora sem perguntar nada.
+      if (!ed.dirty || hasWork(ed) === false) action();
       else setPending(() => action);
     },
-    [ed.dirty, ed.history],
+    [ed],
   );
 
   /* ---------------- arrastar e soltar ---------------- */
@@ -121,16 +169,21 @@ export default function App() {
   // timeline (`ed.dirty`/`ed.history` entram nas deps dele) — ou seja, o efeito
   // re-rodava o tempo todo, e cada re-rodada era um sorteio pra vazar listener.
   const handleDrop = (e: DragDropEvent) => {
-    if (e.type === "over") setDropping(true);
-    else if (e.type === "leave") setDropping(false);
+    if (e.type === "over") setDropping(overPool(e.position) ? "pool" : "app");
+    else if (e.type === "leave") setDropping(null);
     else if (e.type === "drop") {
-      setDropping(false);
+      const onPool = overPool(e.position);
+      setDropping(null);
       const paths = e.paths.filter((p) =>
         VIDEO_EXT.includes(p.split(".").pop()?.toLowerCase() ?? ""),
       );
       const proj = e.paths.find((p) => p.toLowerCase().endsWith(".tvproj"));
+      // Projeto ganha de tudo, inclusive de cair no painel: soltar um `.tvproj`
+      // só pode querer dizer "abra isto".
       if (proj) guard(() => void useEditor.getState().openProject(proj));
-      else if (paths.length > 0) void useEditor.getState().importPaths(paths);
+      // O ALVO decide o que acontece — é a única diferença entre os dois drops,
+      // e é a que faz o painel valer a pena: soltar nele guarda pra depois.
+      else if (paths.length > 0) void useEditor.getState().importPaths(paths, !onPool);
     }
   };
   const onDrop = useRef(handleDrop);
@@ -210,7 +263,7 @@ export default function App() {
         .onCloseRequested(async (e) => {
           const exporting = isExporting();
           const s = useEditor.getState();
-          const dirty = s.dirty && timelineDuration(s.history.present) > 0;
+          const dirty = s.dirty && hasWork(s);
           if (!exporting && !dirty) return; // nada a perder: fecha normal
           e.preventDefault();
           if (deciding) return; // já há um diálogo aberto (clicou no X de novo)
@@ -385,8 +438,11 @@ export default function App() {
           items={[
             { label: t("top.new"), hint: "", onClick: () => guard(() => ed.newProject()) },
             { label: t("top.open"), hint: "Ctrl+O", onClick: () => guard(() => void doOpen()) },
-            { label: t("top.save"), hint: "Ctrl+S", onClick: () => void doSave(false), disabled: empty, divider: true },
-            { label: t("top.saveAs"), hint: "Ctrl+Shift+S", onClick: () => void doSave(true), disabled: empty },
+            // `blank` e não `empty`: um projeto que só tem o POOL cheio já tem o
+            // que salvar (o `.tvproj` guarda o pool inteiro desde a v0.11) — e
+            // era exatamente o trabalho que se perderia sem poder gravar.
+            { label: t("top.save"), hint: "Ctrl+S", onClick: () => void doSave(false), disabled: blank, divider: true },
+            { label: t("top.saveAs"), hint: "Ctrl+Shift+S", onClick: () => void doSave(true), disabled: blank },
           ]}
         />
         <MenuButton
@@ -439,7 +495,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {empty ? (
+      {blank ? (
         <div className={`empty ${dropping ? "dropping" : ""}`}>
           <div className="empty-box">
             <div className="empty-icon" aria-hidden>
@@ -475,7 +531,12 @@ export default function App() {
         </div>
       ) : (
         <>
-          <div className={`grid ${dropping ? "dropping" : ""}`}>
+          {/* O painel entra como COLUNA do mesmo grid (e não como irmão do
+              `.grid`) pra herdar de graça a cura da F1: o grid não rola, cada
+              coluna rola por dentro. Um wrapper novo por fora traria de volta o
+              workspace inteiro rolando — a causa nº1 do "tá estranho". */}
+          <div className={`grid ${poolOpen ? "with-pool" : "with-pool-rail"} ${dropping === "app" ? "dropping" : ""}`}>
+            <MediaPool osDropping={dropping === "pool"} />
             <Preview />
             <ClipInspector />
           </div>

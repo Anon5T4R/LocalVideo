@@ -451,6 +451,63 @@ export function appendMedia(
   return withTrack(tl, ti, [...track.clips, clip]);
 }
 
+/**
+ * Insere um clipe de mídia numa trilha e num instante ESCOLHIDOS — o que o
+ * arrasto do painel de mídia (v0.11) faz ao soltar: a posição é onde o dedo
+ * soltou, a trilha é a lane debaixo dele.
+ *
+ * Irmã do `appendMedia`, e as duas continuam existindo porque respondem a
+ * perguntas diferentes: o import rápido não sabe onde o usuário quer o clipe
+ * (então enfileira no fim, sem buraco), e o arrasto sabe exatamente (então
+ * obedece). Compartilhar as duas num único "insert com start opcional" faria a
+ * regra do fim-da-trilha virar um `if` escondido dentro do caminho do arrasto.
+ *
+ * NÃO empurra ninguém: solta onde mandaram, sobrepondo se for o caso — é o
+ * mesmo contrato do `moveClip`, e é o que o olho espera de um arrasto (o clipe
+ * fica onde o dedo largou). Sobreposição em trilha de vídeo VIRA transição neste
+ * modelo, o que é surpresa possível; mas a alternativa (empurrar os vizinhos)
+ * seria surpresa CERTA — o filme inteiro andando por causa de um arrasto.
+ *
+ * Aceita trilha de áudio de propósito: soltar um arquivo direto numa lane de
+ * áudio é o gesto de quem quer só a música, e o `detachAudio` já provou que um
+ * clipe de mídia em trilha de áudio é cidadão de primeira classe aqui.
+ */
+export function insertMediaAt(
+  tl: Timeline,
+  trackId: string,
+  startMs: number,
+  media: { path: string; srcIn: number; srcOut: number },
+): Timeline {
+  const ti = tl.tracks.findIndex((t) => t.id === trackId);
+  if (ti < 0) return tl;
+  const durationMs = Math.max(0, Math.round(media.srcOut - media.srcIn));
+  // Duração zero não vira clipe: um clipe de 0ms é invisível na régua, não dá
+  // pra selecionar e ainda assim conta no `clipCount` — um fantasma.
+  if (durationMs <= 0) return tl;
+  const clip: Clip = {
+    id: newId(),
+    startMs: Math.max(0, Math.round(startMs)),
+    durationMs,
+    path: media.path,
+    srcIn: Math.max(0, Math.round(media.srcIn)),
+  };
+  return withTrack(tl, ti, [...tl.tracks[ti].clips, clip]);
+}
+
+/**
+ * Quantos clipes (em TODAS as trilhas) usam este arquivo.
+ *
+ * É a pergunta que o painel de mídia faz duas vezes: pra mostrar o contador no
+ * item ("em uso: 3") e pra decidir se remover do pool precisa de confirmação.
+ * Pura porque a resposta tem que ser a mesma nos dois lugares — um contador que
+ * discorde do diálogo é como o app perde a confiança do usuário.
+ */
+export function mediaUsageCount(tl: Timeline, path: string): number {
+  let n = 0;
+  for (const t of tl.tracks) for (const c of t.clips) if (c.path === path) n += 1;
+  return n;
+}
+
 /** Separa o áudio de um clipe de vídeo pra uma trilha de áudio própria.
  *
  *  O clipe de vídeo original fica MUDO (não perde o áudio — só para de tocá-lo),

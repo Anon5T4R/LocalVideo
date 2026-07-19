@@ -35,23 +35,55 @@ export { TIMELINE_VERSION as TVPROJ_VERSION };
 export interface ProjectFile {
   app: "LocalVideo";
   version: number;
-  /** Cache do que a sonda achou, por caminho: abrir não re-sonda tudo à toa. */
+  /**
+   * O POOL do projeto: todo arquivo que o usuário importou, por caminho, com o
+   * que a sonda achou (abrir não re-sonda tudo à toa).
+   *
+   * Desde a v0.11 inclui arquivos SEM clipe na timeline — ver `serializeProject`
+   * pro porquê de o campo ter deixado de ser cache derivado.
+   */
   media: Record<string, RawMediaInfo>;
   tracks: Track[];
 }
 
-/** Só a mídia REFERENCIADA vai pro arquivo: remover o último clipe de um vídeo
- *  tira o vídeo do projeto também, senão o `.tvproj` engorda com fantasmas. */
+/**
+ * Grava o projeto. O `media` vai INTEIRO — inclusive os arquivos que nenhum
+ * clipe usa.
+ *
+ * ─── Por que isto mudou na v0.11 (era o oposto) ──────────────────────────────
+ *
+ * Até a v0.10 só a mídia REFERENCIADA entrava: `media` era cache derivado dos
+ * clipes, então podá-lo era higiene ("remover o último clipe de um vídeo tira o
+ * vídeo do projeto"). Com o painel de mídia (o pool), `media` deixou de ser
+ * derivado e virou **estado do usuário**: importar um arquivo pro pool é um ato
+ * deliberado, e um arquivo ainda sem clipe é o caso NORMAL de quem está
+ * montando (traz cinco takes, decide depois qual entra). Podar continuaria
+ * correto pro cache e passou a estar errado pro pool: salvar apagaria calado
+ * metade do trabalho de importação, e a pessoa só descobriria ao reabrir.
+ *
+ * O medo antigo (o `.tvproj` engordar com fantasmas) segue válido e agora tem
+ * dono: o pool tem "remover do painel". Antes o usuário não tinha COMO tirar um
+ * arquivo do projeto a não ser apagando o último clipe dele; hoje tem um botão,
+ * então a poda é escolha dele e não regra escondida do save. Custo real do que
+ * fica: ~200 bytes de JSON por arquivo.
+ *
+ * ─── Por que o `TIMELINE_VERSION` **não** subiu ──────────────────────────────
+ *
+ * Nenhuma chave nova: é a MESMA chave `media`, com mais entradas. Um LocalVideo
+ * v0.10 abre este arquivo inteiro (o parser já lê `media` cru, sem cruzar com os
+ * clipes) e nada quebra; se ele SALVAR por cima, poda os itens sem clipe e o
+ * pool encolhe. Isso é degradação, mas de outra classe que a do mudo da v0.9.1
+ * (que forçou o bump pra 3): lá a perda era invisível e mudava o vídeo
+ * EXPORTADO; aqui ela é visível na hora (o painel é a tela toda dizendo o que
+ * tem dentro) e o custo de desfazer é reimportar — o arquivo no disco não foi
+ * tocado. Bumpar pra 4 faria toda build ≤0.10 RECUSAR o projeto ("versão mais
+ * nova"), que é um dano certo e maior que o hipotético.
+ */
 export function serializeProject(tl: Timeline, media: Record<string, RawMediaInfo>): string {
-  const used = new Set<string>();
-  for (const t of tl.tracks) for (const c of t.clips) if (c.path) used.add(c.path);
-  const kept: Record<string, RawMediaInfo> = {};
-  for (const [path, info] of Object.entries(media)) if (used.has(path)) kept[path] = info;
-
   const doc: ProjectFile = {
     app: "LocalVideo",
     version: TIMELINE_VERSION,
-    media: kept,
+    media,
     tracks: tl.tracks,
   };
   return JSON.stringify(doc, null, 2);

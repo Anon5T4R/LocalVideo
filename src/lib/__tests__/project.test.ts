@@ -206,16 +206,52 @@ describe(".tvproj v3 (formato corrente)", () => {
     expect(c.opacityKeyframes).toBeUndefined();
   });
 
-  it("não guarda mídia órfã (arquivo sem clipe sai do projeto)", () => {
+  // A regressão que a v0.11 (painel de mídia) inverteu de propósito: até a v0.10
+  // este teste exigia o CONTRÁRIO — arquivo sem clipe era podado no save. Com o
+  // pool, um arquivo importado e ainda sem clipe é o caso normal de quem monta,
+  // e podá-lo apagaria calado o trabalho de importação. Ver `serializeProject`.
+  it("guarda o POOL inteiro — arquivo sem clipe sobrevive a salvar", () => {
     const media = {
       "C:\\v1.mp4": info("C:\\v1.mp4"),
       "C:\\v2.mp4": info("C:\\v2.mp4"),
-      "C:\\sumiu.mp4": info("C:\\sumiu.mp4"),
+      "C:\\so-no-pool.mp4": info("C:\\so-no-pool.mp4"),
     };
     const doc = JSON.parse(serializeProject(timeline, media));
-    expect(Object.keys(doc.media).sort()).toEqual(["C:\\v1.mp4", "C:\\v2.mp4"]);
+    expect(Object.keys(doc.media).sort()).toEqual([
+      "C:\\so-no-pool.mp4",
+      "C:\\v1.mp4",
+      "C:\\v2.mp4",
+    ]);
     expect(doc.app).toBe("LocalVideo");
     expect(doc.version).toBe(TVPROJ_VERSION);
+  });
+
+  // O ciclo COMPLETO — é ele que prova a promessa da fatia ("o pool sobrevive a
+  // salvar/abrir"), e não só o formato: serializa, lê de volta, e o arquivo sem
+  // clipe continua lá com os metadados que o painel desenha (duração, tamanho).
+  it("pool sobrevive ao ciclo salvar→abrir, com os metadados", () => {
+    const media = {
+      "C:\\v1.mp4": info("C:\\v1.mp4"),
+      "C:\\so-no-pool.mp4": info("C:\\so-no-pool.mp4"),
+    };
+    const back = parseProject(serializeProject(timeline, media));
+    expect(Object.keys(back.media).sort()).toEqual(["C:\\so-no-pool.mp4", "C:\\v1.mp4"]);
+    expect(back.media["C:\\so-no-pool.mp4"].durationMs).toBe(
+      info("C:\\so-no-pool.mp4").durationMs,
+    );
+    // E o pool NÃO inventa clipe: entrar no painel não é entrar na timeline.
+    expect(back.timeline.tracks.flatMap((t) => t.clips).some((c) => c.path?.includes("so-no-pool"))).toBe(
+      false,
+    );
+  });
+
+  // A versão NÃO subiu com esta mudança (nenhuma chave nova — a `media` só ficou
+  // mais cheia). Prender isso aqui evita um bump por reflexo numa fatia futura:
+  // 4 faria toda build ≤0.10 recusar o arquivo. Ver o cabeçalho de
+  // `serializeProject` pro raciocínio inteiro.
+  it("pool inteiro NÃO exigiu bump de versão", () => {
+    const doc = JSON.parse(serializeProject(timeline, { "C:\\orfao.mp4": info("C:\\orfao.mp4") }));
+    expect(doc.version).toBe(3);
   });
 
   it("recusa arquivo que não é nosso, e não finge que abriu", () => {

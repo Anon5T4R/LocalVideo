@@ -25,6 +25,7 @@ import {
   isMedia,
   locate,
   moveClip,
+  insertMediaAt,
   newTimeline,
   pushHistory,
   redo,
@@ -138,7 +139,22 @@ interface EditorState {
   canRedo: () => boolean;
 
   init: () => Promise<void>;
-  importPaths: (paths: string[]) => Promise<void>;
+  /**
+   * Importa arquivos. `insert` decide se cada um também vira clipe no fim da
+   * trilha base (o fluxo rápido de sempre) ou se só entra no POOL (v0.11).
+   *
+   * O padrão continua `true` porque é o que o botão Importar e o atalho Ctrl+I
+   * prometem desde a v0.1 — quem importa pelo menu quer ver o vídeo na régua, e
+   * mudar isso seria tirar um passo de quem só tem um arquivo. Quem SOLTA no
+   * painel de mídia passa `false`: ali o gesto diz "guarde pra depois", e o
+   * clipe nasce quando o usuário arrastar pra timeline.
+   */
+  importPaths: (paths: string[], insert?: boolean) => Promise<void>;
+  /** Cria um clipe de um arquivo do pool numa trilha/instante (arrasto do painel). */
+  doInsertMedia: (path: string, trackId: string, startMs: number) => void;
+  /** Tira um arquivo do pool. NÃO mexe na timeline (a UI confirma quando há
+   *  clipe usando) nem no disco — some do painel, o arquivo continua lá. */
+  doRemoveMedia: (path: string) => void;
   doSplit: () => void;
   /** Apara arrastando uma borda do clipe pra `timelineMs`. */
   doTrimEdge: (id: string, edge: "in" | "out", timelineMs: number) => void;
@@ -283,7 +299,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  importPaths: async (paths) => {
+  importPaths: async (paths, insert = true) => {
     if (paths.length === 0) return;
     set({ importing: true });
     try {
@@ -298,13 +314,24 @@ export const useEditor = create<EditorState>((set, get) => ({
           continue;
         }
 
-        // O clipe entra INTEIRO (0..duração) no fim da trilha base.
         set((s) => {
+          // O pool recebe SEMPRE — inserir ou não é sobre a timeline, não sobre
+          // conhecer o arquivo. (E `media` é o pool desde a v0.11: ver o
+          // `serializeProject`.)
+          const media = { ...s.media, [path]: info };
+          if (!insert) {
+            // Só o pool: nada de clipe, nada de undo (o histórico é da TIMELINE
+            // — empilhar um passo que não mudou nenhuma trilha faria um Ctrl+Z
+            // "não fazer nada" na cara do usuário). Mas SUJA o projeto: o pool
+            // vai pro arquivo, então há o que salvar.
+            return { media, dirty: true };
+          }
+          // O clipe entra INTEIRO (0..duração) no fim da trilha base.
           const tl = appendMedia(s.history.present, { path, srcIn: 0, srcOut: info.durationMs });
           const base = baseVideoTrack(tl);
           const last = base?.clips[base.clips.length - 1];
           return {
-            media: { ...s.media, [path]: info },
+            media,
             history: pushHistory(s.history, tl),
             dirty: true,
             selectedId: last?.id ?? s.selectedId,
@@ -318,6 +345,52 @@ export const useEditor = create<EditorState>((set, get) => ({
     } finally {
       set({ importing: false });
     }
+  },
+
+  doInsertMedia: (path, trackId, startMs) => {
+    const { history, media } = get();
+    const info = media[path];
+    if (!info) return; // não está no pool: não há duração pra dar ao clipe
+    const before = new Set<string>();
+    for (const tk of history.present.tracks) for (const c of tk.clips) before.add(c.id);
+    const next = insertMediaAt(history.present, trackId, startMs, {
+      path,
+      srcIn: 0,
+      srcOut: info.durationMs,
+    });
+    if (next === history.present) return;
+    // O clipe recém-nascido vira a seleção — mesma regra do Ctrl+D e do título:
+    // quem acabou de soltar um clipe quer mexer NELE, e o inspetor já abre com
+    // as propriedades certas.
+    let createdId: string | null = null;
+    for (const tk of next.tracks) for (const c of tk.clips) if (!before.has(c.id)) createdId = c.id;
+    set({ history: pushHistory(history, next), dirty: true, selectedId: createdId });
+  },
+
+  doRemoveMedia: (path) => {
+    const { media } = get();
+    if (!media[path]) return;
+    // Sai do pool E dos caches derivados dele: deixar a tira de miniaturas e a
+    // onda para trás seria vazamento silencioso (e, se o mesmo caminho voltasse
+    // com outro conteúdo — o usuário regravou por cima —, o app desenharia a
+    // miniatura ANTIGA do arquivo novo, que é bug invisível).
+    set((s) => {
+      const nextMedia = { ...s.media };
+      delete nextMedia[path];
+      const thumbs = { ...s.thumbs };
+      delete thumbs[path];
+      const peaks: Record<string, number[]> = {};
+      for (const [k, v] of Object.entries(s.peaks)) {
+        if (!k.startsWith(`${path}#`)) peaks[k] = v;
+      }
+      return {
+        media: nextMedia,
+        thumbs,
+        peaks,
+        missing: s.missing.filter((p) => p !== path),
+        dirty: true,
+      };
+    });
   },
 
   doSplit: () => {
@@ -646,8 +719,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
 
     // O .tvproj guarda CAMINHO, não vídeo. Se a mídia foi movida, o app diz.
+    //
+    // A lista sai do POOL e não só dos clipes (v0.11): um arquivo importado que
+    // ainda não virou clipe também precisa do cheque de existência, do escopo de
+    // asset e das miniaturas — senão ele voltaria pro painel como um retângulo
+    // cinza sem thumb, e o app só descobriria que sumiu do disco na hora em que
+    // o usuário arrastasse pra régua. O `??` cobre o projeto antigo (≤0.10) que
+    // podava a mídia órfã no save e pode ter clipe sem entrada em `media`.
     const paths = [
-      ...new Set(doc.timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!))),
+      ...new Set([
+        ...Object.keys(doc.media),
+        ...doc.timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!)),
+      ]),
     ];
     let missing: string[] = [];
     try {
@@ -677,9 +760,10 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     for (const p of paths) {
       if (missing.includes(p)) continue;
-      void loadThumbs(p, media[p]?.durationMs ?? 0);
       const info = media[p];
-      if (info) void loadPeaks(p, info);
+      if (!info) continue; // clipe sem entrada no pool (projeto ≤0.10 podado)
+      void loadThumbs(p, info.durationMs);
+      void loadPeaks(p, info);
     }
     if (missing.length > 0) {
       useUi.getState().pushToast("error", t("proj.missingMedia", { n: missing.length }));

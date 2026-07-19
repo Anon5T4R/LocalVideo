@@ -1289,6 +1289,208 @@ kbd {
   padding: 0 2px;
 }
 
+/* ---------- painel de mídia (o "pool", v0.11) ---------- */
+
+/* O painel é a PRIMEIRA COLUNA do `.grid` (ver `.grid` e a nota no App.tsx): ele
+ * herda de graça a cura da F1 — o grid não rola, cada coluna rola por dentro.
+ * `260px` é o menor tamanho em que o nome de um arquivo real ("gravacao-2026-07-
+ * 19-reuniao.mp4") ainda mostra o começo E o fim úteis ao lado de uma miniatura
+ * 16:9 de 64px. Recolhido, sobra um trilho de 34px com o botão de reabrir. */
+.grid.with-pool {
+  grid-template-columns: 260px minmax(0, 2fr) minmax(280px, 1fr);
+}
+.grid.with-pool-rail {
+  grid-template-columns: 34px minmax(0, 2fr) minmax(280px, 1fr);
+}
+.pool {
+  min-width: 0;
+  overflow: hidden;
+}
+.pool-head {
+  align-items: center;
+}
+.pool-head .muted {
+  margin-left: auto;
+}
+.pool-toggle {
+  padding: 2px 8px;
+  line-height: 1;
+  font-size: 15px;
+}
+
+/* A LISTA rola — nunca o workspace. Mesmo `overscroll-behavior: contain` do
+ * inspetor: chegar no fim da lista não pode continuar rolando o que está atrás. */
+.pool-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 -14px;
+  padding: 0 14px;
+}
+.pool-empty,
+.pool-foot {
+  margin: 0;
+  line-height: 1.45;
+}
+.pool-foot {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.pool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  /* `grab` e não `pointer`: o gesto principal do item é ARRASTAR, e o cursor é
+   * a única coisa que conta isso antes de a pessoa tentar. */
+  cursor: grab;
+  /* O arrasto é por pointer (como o da régua). Sem isto, o navegador começa a
+   * seleção de texto do nome no meio do gesto e o fantasma some atrás dela. */
+  user-select: none;
+  touch-action: none;
+}
+.pool-item:hover {
+  border-color: var(--accent);
+}
+.pool-item.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+.pool-item.gone {
+  border-color: var(--err-border);
+  background: var(--err-bg);
+}
+.pool-thumb {
+  flex: none;
+  width: 64px;
+  height: 36px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.pool-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.pool-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* O nome corta no MEIO da palavra e não quebra em duas linhas: com 260px de
+ * coluna, quebrar faria cada item ter altura diferente e a lista viraria uma
+ * escada. O `title` do item mostra o caminho inteiro. */
+.pool-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.pool-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pool-gone {
+  color: var(--danger);
+}
+.pool-x {
+  margin-left: auto;
+  flex: none;
+}
+
+/* O painel como ALVO de drop do SO: soltar aqui importa sem criar clipe. O
+ * realce é o mesmo vocabulário do `.empty.dropping`/`.grid.dropping`. */
+.pool.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* Recolhido: um trilho vertical com o rótulo de pé. */
+.pool.collapsed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.pool-rail-label {
+  writing-mode: vertical-rl;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.pool-rail-count {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* O fantasma que segue o dedo e a marca de "cai aqui" na lane. Os dois são
+ * `fixed` porque o gesto atravessa painéis com rolagem própria — presos a
+ * qualquer container, sumiriam atrás do `overflow` dele. `pointer-events: none`
+ * é obrigatório: o fantasma fica DEBAIXO do cursor, e sem isto ele mesmo
+ * responderia ao `pointerup` no lugar da lane. */
+.pool-ghost {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
+}
+.pool-dropmark {
+  position: fixed;
+  z-index: 59;
+  pointer-events: none;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--panel);
+}
+
+/* Estreito: o grid empilha numa coluna só (ver o @media do `.grid`), e aí o
+ * painel vira uma faixa de altura limitada no topo em vez de uma coluna — sem
+ * isto, a lista de mídia empurraria a prévia pra fora da tela nesse breakpoint,
+ * que é exatamente o problema que a F1 consertou. */
+@media (max-width: 900px) {
+  .grid.with-pool,
+  .grid.with-pool-rail {
+    grid-template-columns: 1fr;
+  }
+  /* `height` e não `max-height`: nesse breakpoint o `.grid` volta a rolar
+   * inteiro e as linhas se dividem o espaço, o que espremia o painel a ~22px de
+   * lista (medido a 880px) — altura suficiente pra meio item. Cravar 240px dá
+   * três itens e meio, e o resto rola por dentro como na coluna. */
+  .pool {
+    height: 240px;
+  }
+}
+
 /* ---------- inspetor (painel de propriedades) ---------- */
 
 /* A metade 2 da cura do scroll (ver `.grid`): o card não cresce além da linha do

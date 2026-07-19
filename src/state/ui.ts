@@ -63,11 +63,36 @@ interface UiState {
    * por trás dela.
    */
   helpOpen: boolean;
+  /**
+   * O painel de mídia (a coluna da esquerda) está aberto?
+   *
+   * Nasce ABERTO e persiste em `localStorage` — as duas coisas por disciplina,
+   * não por moda. Aberto porque painel com conteúdo em uso nasce visível (é a
+   * regra da suíte: o usuário não deve ter que descobrir onde foi parar o que
+   * ele acabou de importar). Persistente — e não de sessão como `sections` —
+   * porque é LAYOUT de bancada, não "estou mexendo em cor agora": quem edita em
+   * tela pequena fecha o painel uma vez e não quer reabri-lo a cada projeto. É o
+   * mesmo critério do tema e do interruptor de snap.
+   */
+  poolOpen: boolean;
+  /**
+   * O caminho que está sendo arrastado DO painel pra timeline agora (`null` =
+   * nenhum). Mora no store porque o gesto atravessa dois componentes que não se
+   * conhecem: quem começa é o `MediaPool`, quem termina (e sabe converter pixel
+   * em ms e achar a lane) é a `Timeline`.
+   *
+   * Só o CAMINHO, e não a posição do ponteiro: guardar x/y aqui faria a store
+   * disparar re-render de todo mundo a 60 Hz durante o arrasto. Cada lado segue
+   * o ponteiro no seu próprio `pointermove` e mantém o rastro em estado local.
+   */
+  poolDragPath: string | null;
 
   setTheme: (t: Theme) => void;
   setMenuOpen: (v: boolean) => void;
   setConfirmOpen: (v: boolean) => void;
   setHelpOpen: (v: boolean) => void;
+  setPoolOpen: (v: boolean) => void;
+  setPoolDragPath: (v: string | null) => void;
   setSettingsOpen: (v: boolean) => void;
   /** Abre/fecha uma seção do inspetor (`open` explícito sobrescreve o padrão). */
   toggleSection: (id: string, open: boolean) => void;
@@ -76,6 +101,14 @@ interface UiState {
 }
 
 const THEME_KEY = "localvideo.theme";
+const POOL_KEY = "localvideo.pool";
+
+/** O painel de mídia começa ABERTO (ausente = aberto); só um "0" gravado o
+ *  fecha. O `typeof` é o de sempre: este módulo roda em teste Node. */
+function loadPoolOpen(): boolean {
+  if (typeof localStorage === "undefined") return true;
+  return localStorage.getItem(POOL_KEY) !== "0";
+}
 
 export const THEMES: Theme[] = [
   "system",
@@ -116,10 +149,21 @@ export const useUi = create<UiState>((set) => ({
   menuOpen: false,
   confirmOpen: false,
   helpOpen: false,
+  poolOpen: loadPoolOpen(),
+  poolDragPath: null,
 
   setMenuOpen: (menuOpen) => set({ menuOpen }),
   setConfirmOpen: (confirmOpen) => set({ confirmOpen }),
   setHelpOpen: (helpOpen) => set({ helpOpen }),
+  setPoolOpen: (poolOpen) => {
+    try {
+      localStorage.setItem(POOL_KEY, poolOpen ? "1" : "0");
+    } catch {
+      /* sem localStorage (teste em Node) o painel ainda abre/fecha na sessão */
+    }
+    set({ poolOpen });
+  },
+  setPoolDragPath: (poolDragPath) => set({ poolDragPath }),
   toggleSection: (id, open) => set((s) => ({ sections: { ...s.sections, [id]: open } })),
 
   setTheme: (theme) => {

@@ -143,6 +143,22 @@ const pt = {
   "tl.noThumbs": "sem miniaturas",
   "tl.noWave": "extraindo a forma de onda…",
 
+  // ---- painel de mídia (o "pool", v0.11) ----
+  "pool.title": "Mídia",
+  "pool.count": "{n} arquivo(s)",
+  "pool.empty":
+    "Nenhum arquivo ainda. Solte vídeos AQUI pra guardar sem pôr na timeline — ou use Importar.",
+  "pool.foot": "Arraste um arquivo daqui pra uma trilha. Onde você soltar é onde o clipe começa.",
+  "pool.dragHint": "Arraste pra timeline",
+  "pool.uses": "em uso: {n}",
+  "pool.gone": "sumiu do disco",
+  "pool.remove": "Tirar do painel",
+  "pool.removeTitle": "Tirar {name} do painel?",
+  "pool.removeBody":
+    "{n} clipe(s) da timeline usam este arquivo — eles CONTINUAM lá e seguem tocando. Só o item do painel sai, e o arquivo no disco não é tocado.",
+  "pool.collapse": "Recolher o painel de mídia",
+  "pool.expand": "Abrir o painel de mídia",
+
   "clip.title": "Clipe selecionado",
   "clip.none": "Nenhum clipe selecionado. Clique num clipe da timeline.",
   "clip.file": "Arquivo",
@@ -495,6 +511,22 @@ const en: Record<MessageKey, string> = {
   "tl.noThumbs": "no thumbnails",
   "tl.noWave": "extracting the waveform…",
 
+  // ---- media pool (v0.11) ----
+  "pool.title": "Media",
+  "pool.count": "{n} file(s)",
+  "pool.empty":
+    "No files yet. Drop videos HERE to keep them without adding to the timeline — or use Import.",
+  "pool.foot": "Drag a file from here onto a track. Where you drop it is where the clip starts.",
+  "pool.dragHint": "Drag to the timeline",
+  "pool.uses": "in use: {n}",
+  "pool.gone": "gone from disk",
+  "pool.remove": "Remove from the panel",
+  "pool.removeTitle": "Remove {name} from the panel?",
+  "pool.removeBody":
+    "{n} clip(s) on the timeline use this file — they STAY there and keep playing. Only the panel item goes, and the file on disk is untouched.",
+  "pool.collapse": "Collapse the media panel",
+  "pool.expand": "Open the media panel",
+
   "clip.title": "Selected clip",
   "clip.none": "No clip selected. Click a clip on the timeline.",
   "clip.file": "File",
@@ -846,6 +878,23 @@ const es: Record<MessageKey, string> = {
   "tl.dropHere": "Suelta aquí",
   "tl.noThumbs": "sin miniaturas",
   "tl.noWave": "extrayendo la forma de onda…",
+
+  // ---- panel de medios (el "pool", v0.11) ----
+  "pool.title": "Medios",
+  "pool.count": "{n} archivo(s)",
+  "pool.empty":
+    "Aún no hay archivos. Suelta vídeos AQUÍ para guardarlos sin ponerlos en la línea de tiempo — o usa Importar.",
+  "pool.foot":
+    "Arrastra un archivo desde aquí a una pista. Donde lo sueltes es donde empieza el clip.",
+  "pool.dragHint": "Arrastra a la línea de tiempo",
+  "pool.uses": "en uso: {n}",
+  "pool.gone": "ya no está en el disco",
+  "pool.remove": "Quitar del panel",
+  "pool.removeTitle": "¿Quitar {name} del panel?",
+  "pool.removeBody":
+    "{n} clip(s) de la línea de tiempo usan este archivo — SIGUEN ahí y se siguen reproduciendo. Sólo sale el elemento del panel, y el archivo en el disco no se toca.",
+  "pool.collapse": "Plegar el panel de medios",
+  "pool.expand": "Abrir el panel de medios",
 
   "clip.title": "Clip seleccionado",
   "clip.none": "Ningún clip seleccionado. Haz clic en un clip de la línea de tiempo.",

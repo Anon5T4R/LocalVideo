@@ -23,6 +23,7 @@ import {
   type TrackKind,
 } from "../lib/timeline";
 import { baseName, peakKey, useEditor } from "../state/editor";
+import { setLaneResolver } from "../state/lanedrop";
 import { useUi } from "../state/ui";
 
 /** Passos de régua "redondos" (ms) — a escala tem que ser de relógio. */
@@ -356,6 +357,44 @@ export default function Timeline() {
       /* pointer não-ativo: o gesto segue pelos listeners da window */
     }
   };
+
+  /**
+   * A régua RESPONDE ao painel de mídia: "se eu soltar neste ponto da tela, em
+   * que trilha e em que instante cai?" (ver `state/lanedrop.ts` pro porquê de a
+   * ponte ser um registro de módulo e não estado no store).
+   *
+   * Quem converte pixel↔ms é aqui e continua sendo aqui: `pxPerSec`, o rect do
+   * `tl-inner` (que começa exatamente no ms 0 — o mesmo cuidado do `innerRef`) e
+   * as lanes vivem neste componente. O painel só pergunta e desenha a marca.
+   *
+   * Sem deps além do zoom: o resolver lê tudo do DOM na hora da pergunta, então
+   * não envelhece com scroll nem com trilha nova.
+   */
+  useEffect(() => {
+    setLaneResolver((clientX, clientY) => {
+      const inner = innerRef.current;
+      if (!inner) return null;
+      for (const [trackId, el] of laneRefs.current) {
+        const r = el.getBoundingClientRect();
+        if (clientY < r.top || clientY > r.bottom) continue;
+        // Fora do espaço-tempo da régua (à esquerda do ms 0, ou depois do fim
+        // desenhado) não é alvo: soltar sobre a coluna de cabeçalhos criaria um
+        // clipe no ms 0 sem o usuário ter mirado nisso.
+        if (clientX < r.left || clientX > r.right) continue;
+        const startMs = Math.max(0, pxToMs(clientX - inner.getBoundingClientRect().left));
+        return {
+          trackId,
+          startMs,
+          left: clientX,
+          top: r.top,
+          height: r.height,
+        };
+      }
+      return null;
+    });
+    return () => setLaneResolver(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pxPerSec]);
 
   /**
    * A roda sobre a timeline, com os três papéis que todo NLE dá a ela:

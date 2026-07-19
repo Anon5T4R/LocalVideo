@@ -38,6 +38,8 @@ import {
   srcWindowMs,
   timelineDuration,
   timeToClip,
+  insertMediaAt,
+  mediaUsageCount,
   trackEnd,
   undo,
   updateClip,
@@ -720,5 +722,78 @@ describe("moveTrack — reordenar entre as do MESMO tipo", () => {
     const t = tl([vtrack([media("a", 0, 1000)], "v1"), vtrack([media("b", 0, 1000)], "v2")]);
     expect(baseVideoTrack(t)!.id).toBe("v1");
     expect(baseVideoTrack(moveTrack(t, "v2", -1))!.id).toBe("v2");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Painel de mídia (v0.11): soltar do pool na régua                     */
+/* ------------------------------------------------------------------ */
+
+describe("insertMediaAt — o arrasto do painel de mídia", () => {
+  it("solta ONDE mandaram, na trilha que mandaram", () => {
+    const t = insertMediaAt(base(), "v1", 8000, { path: "novo.mp4", srcIn: 0, srcOut: 2000 });
+    const c = t.tracks[0].clips.find((c) => c.path === "novo.mp4")!;
+    expect(c.startMs).toBe(8000);
+    expect(c.durationMs).toBe(2000);
+    expect(c.srcIn).toBe(0);
+    // Buraco entre 6000 e 8000 é permitido: soltar longe é uma escolha, não erro.
+    expect(timelineDuration(t)).toBe(10_000);
+  });
+
+  it("respeita o srcIn (soltar um trecho, não o arquivo do zero)", () => {
+    const t = insertMediaAt(base(), "v1", 0, { path: "n.mp4", srcIn: 1500, srcOut: 4000 });
+    const c = t.tracks[0].clips.find((x) => x.path === "n.mp4")!;
+    expect(c.srcIn).toBe(1500);
+    expect(c.durationMs).toBe(2500);
+  });
+
+  it("cai numa trilha de ÁUDIO (soltar só a música)", () => {
+    const t = insertMediaAt(base(), "a1", 500, { path: "musica.mp3", srcIn: 0, srcOut: 9000 });
+    expect(t.tracks[1].clips).toHaveLength(1);
+    expect(t.tracks[1].clips[0].startMs).toBe(500);
+  });
+
+  it("mantém a trilha ORDENADA por startMs (o resto do módulo conta com isso)", () => {
+    const t = insertMediaAt(base(), "v1", 1500, { path: "n.mp4", srcIn: 0, srcOut: 100 });
+    const starts = t.tracks[0].clips.map((c) => c.startMs);
+    expect(starts).toEqual([...starts].sort((a, b) => a - b));
+  });
+
+  it("start negativo vira 0 — não há tempo antes do começo do filme", () => {
+    const t = insertMediaAt(base(), "v1", -5000, { path: "n.mp4", srcIn: 0, srcOut: 1000 });
+    expect(t.tracks[0].clips.find((c) => c.path === "n.mp4")!.startMs).toBe(0);
+  });
+
+  it("trilha inexistente ou duração zero é NÃO-EVENTO (mesma referência)", () => {
+    const t = base();
+    expect(insertMediaAt(t, "zzz", 0, { path: "n.mp4", srcIn: 0, srcOut: 1000 })).toBe(t);
+    expect(insertMediaAt(t, "v1", 0, { path: "n.mp4", srcIn: 500, srcOut: 500 })).toBe(t);
+    expect(insertMediaAt(t, "v1", 0, { path: "n.mp4", srcIn: 900, srcOut: 100 })).toBe(t);
+  });
+
+  it("não empurra ninguém: soltar em cima SOBREPÕE (como o moveClip)", () => {
+    const t = insertMediaAt(base(), "v1", 1000, { path: "n.mp4", srcIn: 0, srcOut: 500 });
+    // Os três originais ficam exatamente onde estavam.
+    expect(t.tracks[0].clips.filter((c) => c.path !== "n.mp4").map((c) => c.startMs)).toEqual([
+      0, 1000, 3000,
+    ]);
+  });
+});
+
+describe("mediaUsageCount — quantos clipes usam este arquivo", () => {
+  it("conta em TODAS as trilhas, e zero pra quem só está no pool", () => {
+    const t = tl([
+      vtrack([media("a", 0, 1000, 0, "x.mp4"), media("b", 1000, 1000, 0, "x.mp4")]),
+      atrack([media("c", 0, 1000, 0, "x.mp4")], "a1"),
+    ]);
+    expect(mediaUsageCount(t, "x.mp4")).toBe(3);
+    expect(mediaUsageCount(t, "so-no-pool.mp4")).toBe(0);
+  });
+
+  it("título não tem path e não conta", () => {
+    const t = tl([
+      vtrack([{ id: "t1", startMs: 0, durationMs: 1000, title: defaultTitle("oi") }]),
+    ]);
+    expect(mediaUsageCount(t, "x.mp4")).toBe(0);
   });
 });
