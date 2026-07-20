@@ -14,6 +14,7 @@ import SettingsModal from "./components/SettingsModal";
 import Timeline from "./components/Timeline";
 import Toasts from "./components/Toasts";
 import { t } from "./lib/i18n";
+import { shouldIgnoreShortcut } from "./lib/keys";
 import Icon from "./components/Icon";
 import { stepFrames } from "./lib/probe";
 import { baseVideoTrack, clipCount, timelineDuration, timeToClip } from "./lib/timeline";
@@ -307,9 +308,19 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      // Nunca roubar tecla de campo de texto (o Espaço tem que digitar espaço).
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      /*
+       * Campo de texto e controle acionável ficam com a tecla — a regra mora em
+       * `lib/keys.ts` (pura e testada).
+       *
+       * Achado ao fechar o B9 (seções recolhíveis), MEDIDO no app rodando: com
+       * um `<button>` focado, o Espaço caía no ramo `e.key === " "` lá embaixo,
+       * que faz `preventDefault()` e toca/pausa. `preventDefault()` num keydown
+       * de Espaço **cancela a ativação nativa do botão** — ou seja, TODO botão
+       * do app estava morto pra quem navega por teclado, e ainda dava play sem
+       * querer. Não era exclusivo das seções: valia pra topbar, barra da
+       * timeline, tudo.
+       */
+      if (shouldIgnoreShortcut(e.target as Element | null, e.key)) return;
 
       // Com um modal aberto, os atalhos do editor ficam calados: `S` não pode
       // cortar a timeline por trás do diálogo de exportar, nem `Del` sumir com o

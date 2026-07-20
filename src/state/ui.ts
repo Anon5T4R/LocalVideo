@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+import { loadSections, saveSections, toggled, type SectionState } from "../lib/sections";
+
 export type Theme =
   | "light"
   | "dark"
@@ -23,17 +25,20 @@ interface UiState {
   settingsOpen: boolean;
   toasts: Toast[];
   /**
-   * Quais seções do inspetor o usuário abriu/fechou NESTA sessão.
+   * Quais seções do inspetor o usuário abriu/fechou.
    *
-   * Só o que ele MEXEU entra aqui — `undefined` significa "ainda não opinou", e
-   * aí vale o padrão da seção (aberta quando a propriedade está em uso). Se
+   * Só o que ele MEXEU entra aqui — ausente significa "ainda não opinou", e aí
+   * vale o padrão da seção (aberta quando a propriedade está em uso). Se
    * guardássemos o estado inicial de todas, o padrão "nasce aberta porque tem
    * valor" morreria no primeiro render e a dica visual se perderia.
    *
-   * Sessão e não `localStorage` de propósito: é preferência de momento (estou
-   * mexendo em cor agora), não configuração.
+   * **PERSISTE desde a v0.12.0** (padrão B9 da suíte). Até a v0.11 era só de
+   * sessão, com o argumento de que "é preferência de momento". Não é: quem
+   * edita em tela pequena fecha as mesmas cinco seções em todo projeto que
+   * abre. É layout de bancada, igual ao tema e ao `poolOpen` logo abaixo.
+   * A regra e a leitura/gravação moram em `lib/sections.ts`.
    */
-  sections: Record<string, boolean>;
+  sections: SectionState;
   /**
    * Há um menu da topbar (Arquivo/Importar) aberto?
    *
@@ -102,6 +107,7 @@ interface UiState {
 
 const THEME_KEY = "localvideo.theme";
 const POOL_KEY = "localvideo.pool";
+const SECTIONS_KEY = "localvideo.sections";
 
 /** O painel de mídia começa ABERTO (ausente = aberto); só um "0" gravado o
  *  fecha. O `typeof` é o de sempre: este módulo roda em teste Node. */
@@ -145,7 +151,7 @@ export const useUi = create<UiState>((set) => ({
   theme: loadTheme(),
   settingsOpen: false,
   toasts: [],
-  sections: {},
+  sections: loadSections(SECTIONS_KEY),
   menuOpen: false,
   confirmOpen: false,
   helpOpen: false,
@@ -164,7 +170,12 @@ export const useUi = create<UiState>((set) => ({
     set({ poolOpen });
   },
   setPoolDragPath: (poolDragPath) => set({ poolDragPath }),
-  toggleSection: (id, open) => set((s) => ({ sections: { ...s.sections, [id]: open } })),
+  toggleSection: (id, open) =>
+    set((s) => {
+      const sections = toggled(s.sections, id, open);
+      saveSections(SECTIONS_KEY, sections);
+      return { sections };
+    }),
 
   setTheme: (theme) => {
     localStorage.setItem(THEME_KEY, theme);

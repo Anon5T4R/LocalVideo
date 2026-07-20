@@ -261,6 +261,11 @@ const pt = {
   "clip.secVideo": "Vídeo",
   "clip.secColor": "Cor",
   /* --- inspetor em seções recolhíveis (v0.7.1) --- */
+  /* Texto do ponto "em uso" no cabeçalho de uma seção recolhida — o ponto
+     sozinho é invisível pra leitor de tela, e é justamente a informação que o
+     padrão B9 existe pra NÃO esconder. */
+  "sec.inUse": "em uso",
+
   "clip.secInfo": "Informações",
   "clip.secAudio": "Áudio",
   "clip.secSpeed": "Velocidade",
@@ -629,6 +634,8 @@ const en: Record<MessageKey, string> = {
   "clip.secVideo": "Video",
   "clip.secColor": "Color",
   /* --- collapsible inspector sections (v0.7.1) --- */
+  "sec.inUse": "in use",
+
   "clip.secInfo": "Information",
   "clip.secAudio": "Audio",
   "clip.secSpeed": "Speed",
@@ -998,6 +1005,8 @@ const es: Record<MessageKey, string> = {
   "clip.secVideo": "Vídeo",
   "clip.secColor": "Color",
   /* --- inspector en secciones plegables (v0.7.1) --- */
+  "sec.inUse": "en uso",
+
   "clip.secInfo": "Información",
   "clip.secAudio": "Audio",
   "clip.secSpeed": "Velocidad",

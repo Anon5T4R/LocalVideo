@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 
 import { t } from "../lib/i18n";
+import { sectionOpen } from "../lib/sections";
+import { Section as BaseSection } from "./Section";
 import { formatDuration, formatSize, trackDisplayName } from "../lib/probe";
 import {
   clipDuration,
@@ -104,58 +106,34 @@ const sliderSession = {
   onBlur: () => useEditor.getState().endEdit(),
 };
 
-/* ---------------- seções recolhíveis (v0.7.1) ---------------- */
+/* ---------------- seções recolhíveis (v0.7.1; extraídas na v0.12.0) --------- */
 
 /**
- * Uma seção do inspetor: cabeçalho clicável, chevron e um ponto quando a
- * propriedade está EM USO.
+ * Adaptador fino entre o `Section` genérico (`components/Section.tsx`) e o
+ * store deste app.
  *
- * O achado que originou isto (medido no app rodando, janela 1280×720): o
- * inspetor tinha **1068 px** de altura numa área útil de **339 px**, tudo
- * sempre expandido numa coluna plana. Como quem rolava era o `.grid` inteiro —
- * prévia e inspetor na mesma linha —, mexer em qualquer opção de clipe
- * **levava a prévia pra fora da tela**. Era a causa nº 1 do "tá muito estranho
- * como são as opções de clipe": não faltava opção, faltava hierarquia.
- *
- * O `dot` não é enfeite: com tudo fechado, é ele que responde "onde é que eu
- * mexi?" sem abrir sete seções. Uma seção com valor ≠ do neutro nasce ABERTA e
- * marcada; o resto nasce fechado. Depois que o usuário clica, a escolha dele
- * manda (ver `sections` em `state/ui.ts`).
+ * O componente genérico é BURRO de propósito: recebe `open` e `onToggle` e não
+ * conhece store nenhum. É o que permite copiá-lo pros outros apps da suíte, que
+ * guardam o estado de UI cada um do seu jeito (zustand aqui, `useState` +
+ * módulo de setup no LocalRecord). Quem casa o padrão com o app é este wrapper
+ * de dez linhas — e a regra de "aberta ou fechada" vem de `sectionOpen`, que é
+ * pura e testada.
  */
-function Section({
-  id,
-  title,
-  active,
-  summary,
-  children,
-}: {
+function Section(props: {
   id: string;
   title: string;
-  /** A propriedade desta seção está em uso? (nasce aberta, ganha o ponto) */
   active?: boolean;
-  /** Valor resumido à direita do título, pra ler sem abrir (ex.: "1×"). */
   summary?: string;
   children: React.ReactNode;
 }) {
   const sections = useUi((s) => s.sections);
   const toggleSection = useUi((s) => s.toggleSection);
-  const open = sections[id] ?? !!active;
   return (
-    <div className={`insp-sec ${open ? "open" : ""}`}>
-      <button
-        className="insp-sec-head"
-        onClick={() => toggleSection(id, !open)}
-        aria-expanded={open}
-      >
-        <span className="insp-chevron" aria-hidden>
-          ▸
-        </span>
-        <span className="insp-sec-title">{title}</span>
-        {active ? <span className="insp-dot" aria-hidden /> : null}
-        {summary ? <span className="muted small tabnum">{summary}</span> : null}
-      </button>
-      {open ? <div className="insp-sec-body">{children}</div> : null}
-    </div>
+    <BaseSection
+      {...props}
+      open={sectionOpen(sections, props.id, !!props.active)}
+      onToggle={toggleSection}
+    />
   );
 }
 
