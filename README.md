@@ -121,6 +121,20 @@ VITE_SELFTEST='C:\caminho\pro\video.mp4' npm run tauri dev
 | Ctrl+I / Ctrl+O / Ctrl+S | importar / abrir projeto / salvar |
 | Ctrl+E | exportar |
 
-## Licença
+## Créditos e licença
 
-MIT.
+O código deste app é **MIT** (veja [LICENSE](LICENSE)).
+
+O instalador embarca o **[FFmpeg](https://ffmpeg.org)** — build `-gpl` **não
+modificada** do [BtbN](https://github.com/BtbN/FFmpeg-Builds), licenciada sob
+**GPL-3.0-or-later** (compilada com `--enable-gpl --enable-version3`).
+
+O FFmpeg roda como **processo separado**, invocado por linha de comando: o
+código do LocalVideo não faz linkagem com as bibliotecas dele. As duas obras são
+*agregadas* no mesmo instalador e cada uma mantém a sua licença — é por isso que
+embarcar um binário GPL não torna o app GPL. O que a GPL exige aqui é sobre a
+**distribuição do binário**, e é o que os arquivos `LICENSE-ffmpeg.txt` e
+`FONTE-FFMPEG.txt` cumprem: texto integral da licença, procedência exata (tag do
+upstream, sha256, espelho) e a oferta de código-fonte correspondente. Os dois são
+gerados pelo `scripts/fetch-ffmpeg.*` a partir do próprio arquivo baixado e vão
+dentro do instalador, ao lado do executável.
