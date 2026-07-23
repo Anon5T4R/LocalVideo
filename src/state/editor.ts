@@ -6,7 +6,7 @@ import { t } from "../lib/i18n";
 import { applyMarkers, MarkerParseError, parseMarkers } from "../lib/markers";
 import { parseSubtitles, subtitleExtractArgs } from "../lib/subtitles";
 import { audioPeaksArgs, expectedSamples, PEAKS_PER_FILE } from "../lib/peaks";
-import { thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
+import { isImagePath, thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
 import { parseProject, ProjectParseError, serializeProject } from "../lib/project";
 import {
   addTitle,
@@ -15,6 +15,8 @@ import {
   baseVideoTrack,
   canRedo,
   canUndo,
+  DEFAULT_IMAGE_MS,
+  isImageClip,
   moveTrack,
   removeTrack,
   setTrackMuted,
@@ -86,6 +88,21 @@ const SNAP_KEY = "localvideo.snap";
 function loadSnap(): boolean {
   if (typeof localStorage === "undefined") return true;
   return localStorage.getItem(SNAP_KEY) !== "0"; // ausente = ligado (o padrão)
+}
+
+/** Chave do RASCUNHO automático (v0.14). Guarda o último estado da timeline pra
+ *  sobreviver a um fechamento sem salvar — a classe de perda de dado mais cara da
+ *  casa. Formato = o mesmo `.tvproj`; recuperar é reabrir (ver `restoreDraft`). */
+const DRAFT_KEY = "localvideo.draft";
+/** Apaga o rascunho: trabalho salvo em arquivo ou descartado (novo projeto) não
+ *  precisa mais da rede de segurança. */
+function clearDraft(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* sem localStorage: nada a limpar */
+  }
 }
 
 interface EditorState {
@@ -210,6 +227,12 @@ interface EditorState {
   newProject: () => void;
   openProject: (path: string) => Promise<void>;
   saveProject: (path: string) => Promise<void>;
+  /** Grava o RASCUNHO (timeline+pool) no localStorage. Chamado com debounce+teto
+   *  pelo App — a rede de segurança pra quem fecha o app sem salvar em arquivo. */
+  writeDraft: () => void;
+  /** Recupera o rascunho ao abrir o app (quando não há projeto na tela). Volta
+   *  como projeto NÃO salvo (dirty), sem caminho — é trabalho, não arquivo. */
+  restoreDraft: () => Promise<boolean>;
 }
 
 /** Um arquivo que não entrou, já traduzido: `name` é o NOME (nunca o caminho
@@ -330,8 +353,16 @@ export const useEditor = create<EditorState>((set, get) => ({
             // vai pro arquivo, então há o que salvar.
             return { media, dirty: true };
           }
-          // O clipe entra INTEIRO (0..duração) no fim da trilha base.
-          const tl = appendMedia(s.history.present, { path, srcIn: 0, srcOut: info.durationMs });
+          // O clipe entra INTEIRO (0..duração) no fim da trilha base. Imagem não
+          // tem duração de arquivo (o probe diz 0): entra com a duração padrão de
+          // slide e a flag `image` (o export usa `-loop 1 -t`).
+          const isImg = isImagePath(path);
+          const tl = appendMedia(s.history.present, {
+            path,
+            srcIn: 0,
+            srcOut: isImg ? DEFAULT_IMAGE_MS : info.durationMs,
+            image: isImg,
+          });
           const base = baseVideoTrack(tl);
           const last = base?.clips[base.clips.length - 1];
           return {
@@ -357,10 +388,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!info) return; // não está no pool: não há duração pra dar ao clipe
     const before = new Set<string>();
     for (const tk of history.present.tracks) for (const c of tk.clips) before.add(c.id);
+    const isImg = isImagePath(path);
     const next = insertMediaAt(history.present, trackId, startMs, {
       path,
       srcIn: 0,
-      srcOut: info.durationMs,
+      // Imagem: sem duração de arquivo (probe = 0), entra com o padrão de slide.
+      srcOut: isImg ? DEFAULT_IMAGE_MS : info.durationMs,
+      image: isImg,
     });
     if (next === history.present) return;
     // O clipe recém-nascido vira a seleção — mesma regra do Ctrl+D e do título:
@@ -411,7 +445,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     const loc = locate(history.present, id);
     if (!loc) return;
     // Limite = duração do ARQUIVO (mídia): aparar não inventa vídeo que não há.
-    const limit = loc.clip.path ? media[loc.clip.path]?.durationMs : undefined;
+    // Imagem NÃO tem limite (uma imagem dura o que o usuário quiser): sem isso o
+    // `srcLimit` viria do probe (0) e a imagem não esticaria de jeito nenhum.
+    const limit =
+      loc.clip.path && !isImageClip(loc.clip) ? media[loc.clip.path]?.durationMs : undefined;
     const next = setClipEdge(history.present, id, edge, timelineMs, limit, rippleMode);
     if (next === history.present) return;
     const first = !editing || !editPushed;
@@ -694,7 +731,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       );
   },
 
-  newProject: () =>
+  newProject: () => {
+    clearDraft(); // "começar do zero" descarta a rede de segurança de propósito
     set({
       history: initHistory<Timeline>(newTimeline()),
       media: {},
@@ -707,7 +745,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       rate: 1,
       projectPath: null,
       dirty: false,
-    }),
+    });
+  },
 
   openProject: async (path) => {
     let json: string;
@@ -722,66 +761,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     try {
       doc = parseProject(json);
     } catch (e) {
-      const why =
-        e instanceof ProjectParseError && e.message === "newer"
-          ? t("proj.newer")
-          : e instanceof ProjectParseError && e.message === "notOurs"
-            ? t("proj.notOurs")
-            : t("proj.corrupt");
-      useUi.getState().pushToast("error", why);
+      useUi.getState().pushToast("error", parseErrorMessage(e));
       return;
     }
-
-    // O .tvproj guarda CAMINHO, não vídeo. Se a mídia foi movida, o app diz.
-    //
-    // A lista sai do POOL e não só dos clipes (v0.11): um arquivo importado que
-    // ainda não virou clipe também precisa do cheque de existência, do escopo de
-    // asset e das miniaturas — senão ele voltaria pro painel como um retângulo
-    // cinza sem thumb, e o app só descobriria que sumiu do disco na hora em que
-    // o usuário arrastasse pra régua. O `??` cobre o projeto antigo (≤0.10) que
-    // podava a mídia órfã no save e pode ter clipe sem entrada em `media`.
-    const paths = [
-      ...new Set([
-        ...Object.keys(doc.media),
-        ...doc.timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!)),
-      ]),
-    ];
-    let missing: string[] = [];
-    try {
-      const exists = await invoke<boolean[]>("paths_exist", { paths });
-      missing = paths.filter((_, i) => !exists[i]);
-    } catch {
-      /* fora do Tauri: sem o que conferir */
-    }
-
-    await allowMedia(paths.filter((p) => !missing.includes(p)));
-
-    const media: Record<string, MediaInfo> = {};
-    for (const [p, raw] of Object.entries(doc.media)) media[p] = withFps(raw);
-
-    set({
-      history: initHistory(doc.timeline),
-      media,
-      thumbs: {},
-      peaks: {},
-      missing,
-      selectedId: null,
-      playhead: 0,
-      playing: false,
-      projectPath: path,
-      dirty: false,
-    });
-
-    for (const p of paths) {
-      if (missing.includes(p)) continue;
-      const info = media[p];
-      if (!info) continue; // clipe sem entrada no pool (projeto ≤0.10 podado)
-      void loadThumbs(p, info.durationMs);
-      void loadPeaks(p, info);
-    }
-    if (missing.length > 0) {
-      useUi.getState().pushToast("error", t("proj.missingMedia", { n: missing.length }));
-    }
+    await applyProjectDoc(doc, path);
   },
 
   saveProject: async (path) => {
@@ -797,12 +780,114 @@ export const useEditor = create<EditorState>((set, get) => ({
         json: serializeProject(history.present, raws),
       });
       set({ projectPath: path, dirty: false });
+      clearDraft(); // o trabalho está seguro no arquivo agora
       useUi.getState().pushToast("ok", t("proj.saved", { name: baseName(path) }));
     } catch {
       useUi.getState().pushToast("error", t("proj.saveFailed"));
     }
   },
+
+  writeDraft: () => {
+    if (typeof localStorage === "undefined") return;
+    const { history, media } = get();
+    const raws: Record<string, RawMediaInfo> = {};
+    for (const [p, info] of Object.entries(media)) {
+      const { fps: _fps, ...raw } = info;
+      raws[p] = raw;
+    }
+    try {
+      // O MESMO formato do `.tvproj` (serializeProject) — assim o rascunho é só
+      // um projeto guardado noutro lugar, e recuperar é reabrir. Se o
+      // localStorage estourar a cota (projeto gigante), engolimos: o rascunho é
+      // rede de segurança, não pode derrubar a edição por não caber.
+      localStorage.setItem(DRAFT_KEY, serializeProject(history.present, raws));
+    } catch {
+      /* cota cheia ou modo privado: sem rascunho, a edição segue */
+    }
+  },
+
+  restoreDraft: async () => {
+    if (typeof localStorage === "undefined") return false;
+    const json = localStorage.getItem(DRAFT_KEY);
+    if (!json) return false;
+    let doc: ReturnType<typeof parseProject>;
+    try {
+      doc = parseProject(json);
+    } catch {
+      // Rascunho corrompido não vale um erro na cara de quem só abriu o app —
+      // descarta em silêncio e começa limpo.
+      localStorage.removeItem(DRAFT_KEY);
+      return false;
+    }
+    // Volta como trabalho NÃO salvo: sem caminho de arquivo e `dirty`, porque é
+    // exatamente o que era quando o app fechou. Salvar em `.tvproj` é decisão de
+    // quem recuperou.
+    await applyProjectDoc(doc, null);
+    set({ dirty: true });
+    return true;
+  },
 }));
+
+/** Traduz um `ProjectParseError` pro texto do usuário (idioma da UI). */
+function parseErrorMessage(e: unknown): string {
+  if (e instanceof ProjectParseError && e.message === "newer") return t("proj.newer");
+  if (e instanceof ProjectParseError && e.message === "notOurs") return t("proj.notOurs");
+  return t("proj.corrupt");
+}
+
+/**
+ * Aplica um projeto já parseado ao estado — o corpo comum de `openProject` (de
+ * arquivo) e `restoreDraft` (do localStorage). `path` é o caminho do `.tvproj`,
+ * ou `null` quando é rascunho (projeto sem arquivo ainda).
+ *
+ * O .tvproj guarda CAMINHO, não vídeo: confere existência, põe no escopo de
+ * asset e recarrega miniaturas/ondas. A lista sai do POOL e não só dos clipes
+ * (v0.11) — um arquivo importado ainda sem clipe também precisa do cheque.
+ */
+async function applyProjectDoc(doc: ReturnType<typeof parseProject>, path: string | null): Promise<void> {
+  const paths = [
+    ...new Set([
+      ...Object.keys(doc.media),
+      ...doc.timeline.tracks.flatMap((tk) => tk.clips.filter(isMedia).map((c) => c.path!)),
+    ]),
+  ];
+  let missing: string[] = [];
+  try {
+    const exists = await invoke<boolean[]>("paths_exist", { paths });
+    missing = paths.filter((_, i) => !exists[i]);
+  } catch {
+    /* fora do Tauri: sem o que conferir */
+  }
+
+  await allowMedia(paths.filter((p) => !missing.includes(p)));
+
+  const media: Record<string, MediaInfo> = {};
+  for (const [p, raw] of Object.entries(doc.media)) media[p] = withFps(raw);
+
+  useEditor.setState({
+    history: initHistory(doc.timeline),
+    media,
+    thumbs: {},
+    peaks: {},
+    missing,
+    selectedId: null,
+    playhead: 0,
+    playing: false,
+    projectPath: path,
+    dirty: false,
+  });
+
+  for (const p of paths) {
+    if (missing.includes(p)) continue;
+    const info = media[p];
+    if (!info) continue; // clipe sem entrada no pool (projeto ≤0.10 podado)
+    void loadThumbs(p, info.durationMs);
+    void loadPeaks(p, info);
+  }
+  if (missing.length > 0) {
+    useUi.getState().pushToast("error", t("proj.missingMedia", { n: missing.length }));
+  }
+}
 
 /**
  * Põe estes arquivos no escopo do protocolo de asset (ver `media::allow_media`).

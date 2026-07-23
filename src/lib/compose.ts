@@ -242,6 +242,13 @@ export function needsComposite(layers: Layer[]): boolean {
     if (l.kind === "title") return true;
     const c = l.clip;
     return (
+      // Imagem: o `<video>` não decodifica png (ver `timeToClip`), então uma
+      // imagem, mesmo sozinha, tem que ir pela composição no canvas.
+      !!c.image ||
+      // Rotação/espelho (v0.14): o `<video>` cru mostra o quadro original; a
+      // orientação só existe no canvas composto.
+      !!c.rotate ||
+      !!c.flipH ||
       !!c.transform ||
       !!c.crop ||
       !!c.color ||

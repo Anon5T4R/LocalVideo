@@ -207,6 +207,9 @@ function parseClip(raw: unknown): Clip {
   if (typeof c.path === "string" && c.path.length > 0) {
     base.path = c.path;
     base.srcIn = Number.isFinite(c.srcIn) ? Math.max(0, Math.round(c.srcIn as number)) : 0;
+    // v0.14: imagem parada. Só `true` entra (um `image:false` à mão vira ausência,
+    // o mesmo estado). Forçou o bump pra 4 — ver `TIMELINE_VERSION`.
+    if (c.image === true) base.image = true;
   } else if (c.title && typeof c.title === "object") {
     base.title = parseTitle(c.title as Record<string, unknown>);
   } else {
@@ -225,6 +228,10 @@ function parseClip(raw: unknown): Clip {
   if (Number.isFinite(c.fadeInMs)) base.fadeInMs = Math.max(0, Math.round(c.fadeInMs as number));
   if (Number.isFinite(c.fadeOutMs)) base.fadeOutMs = Math.max(0, Math.round(c.fadeOutMs as number));
   if (Number.isFinite(c.opacity)) base.opacity = c.opacity as number;
+  // v0.14 (paridade B15): rotação e espelho por clipe. Só os valores válidos
+  // entram — arquivo editado à mão com `rotate: 45` cai no "sem rotação".
+  if (c.rotate === 90 || c.rotate === 180 || c.rotate === 270) base.rotate = c.rotate;
+  if (c.flipH === true) base.flipH = true;
   // v0.3: filtros/velocidade/envelopes. Cada um é parseado com desconfiança (o
   // arquivo veio do disco), e só entra se tiver a forma certa.
   const crop = parseCrop(c.crop);
@@ -297,12 +304,16 @@ function parseKeyframes(raw: unknown): Keyframe[] | undefined {
 function parseTitle(t: Record<string, unknown>): TitleProps {
   const anchor: TitleAnchor =
     t.anchor === "top" || t.anchor === "center" || t.anchor === "bottom" ? t.anchor : "bottom";
-  return {
+  const title: TitleProps = {
     text: typeof t.text === "string" ? t.text : "",
     fontSizePx: Number.isFinite(t.fontSizePx) ? (t.fontSizePx as number) : 48,
     color: typeof t.color === "string" ? t.color : "#ffffff",
     anchor,
   };
+  // v0.14 (paridade B15): fundo do título (a `box` do drawtext). Só string entra;
+  // ausente = sem caixa (comportamento até a v0.13).
+  if (typeof t.bg === "string" && t.bg.length > 0) title.bg = t.bg;
+  return title;
 }
 
 /** Usado só pelos testes de migração pra ids previsíveis. */

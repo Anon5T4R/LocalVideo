@@ -835,6 +835,25 @@ function span(c: Clip): { s: string; e: string } {
   return { s: secs(c.startMs), e: secs(c.startMs + c.durationMs) };
 }
 
+/**
+ * Filtros de ORIENTAÇÃO de um clipe (v0.14): rotação por `transpose` e espelho
+ * por `hflip`. A ordem é ROTAÇÃO e depois ESPELHO — a mesma que a prévia aplica
+ * no canvas (`rotate()` e depois `scale(-1,1)`), pra o que se vê bater com o
+ * arquivo. Vazio quando o clipe não gira nem espelha.
+ *
+ * `transpose=1` é 90° horário, `=2` é 90° anti-horário (270° horário); 180° são
+ * dois `transpose=1`. Rodar 90/270 TROCA largura e altura — por isso o encaixe
+ * (scale+pad) tem que rodar depois, sempre, quando há rotação ímpar.
+ */
+function orientFilters(c: Clip): string[] {
+  const out: string[] = [];
+  if (c.rotate === 90) out.push("transpose=1");
+  else if (c.rotate === 270) out.push("transpose=2");
+  else if (c.rotate === 180) out.push("transpose=1", "transpose=1");
+  if (c.flipH) out.push("hflip");
+  return out;
+}
+
 /** Y do título conforme a âncora (expressão do drawtext, com `text_h`/`h`). */
 function titleY(anchor: string): string {
   if (anchor === "top") return "(h*0.08)";
@@ -882,12 +901,22 @@ export function filterComplexArgs(
   const args: string[] = [];
   // Uma entrada `-i` por clipe de MÍDIA (mesmo repetindo arquivo — grafo legível
   // vale mais que grafo esperto; reabrir custa quase nada). Título não tem `-i`.
+  //
+  // O índice da entrada é um CONTADOR explícito, não `args.length/2`: a imagem
+  // entra com `-loop 1 -t <dur> -i <png>` (mais de 2 args), então contar args
+  // daria o índice errado. `-loop 1` faz o png virar um stream infinito da mesma
+  // imagem; `-t` o limita à duração do clipe na timeline (imagem tem duração
+  // livre, sem janela-fonte). Sem o `-loop`, o png é 1 quadro só e o vídeo
+  // "pisca" a imagem e some — o bug clássico de imagem no ffmpeg.
   const inputIndex = new Map<string, number>(); // clip.id -> índice de -i
+  let inIdx = 0;
   for (const track of tl.tracks) {
     for (const c of track.clips) {
       if (c.path === undefined) continue;
-      inputIndex.set(c.id, args.length / 2 | 0);
-      args.push("-i", c.path);
+      inputIndex.set(c.id, inIdx);
+      inIdx += 1;
+      if (c.image) args.push("-loop", "1", "-t", secs(c.durationMs), "-i", c.path);
+      else args.push("-i", c.path);
     }
   }
 
@@ -927,17 +956,24 @@ export function filterComplexArgs(
 
           // 1) Recorte do frame (crop) — em pixels do fonte.
           if (c.crop && !isFullCrop(c.crop)) vf.push(cropExpr(c.crop));
-          // 2) Cor (eq) — brilho/contraste/saturação.
+          // 2) Orientação (v0.14): rotação/espelho. ANTES do encaixe, porque
+          //    rodar 90/270 troca largura×altura e o scale+pad tem que caber a
+          //    imagem JÁ girada. Mesma ordem que a prévia usa no canvas.
+          const oriented = orientFilters(c);
+          if (oriented.length) vf.push(...oriented);
+          // 3) Cor (eq) — brilho/contraste/saturação.
           if (c.color && !isNeutralColor(c.color)) vf.push(eqExpr(c.color));
 
-          // 3) Geometria: PiP (escala pra uma largura menor, sem barra — o overlay
+          // 4) Geometria: PiP (escala pra uma largura menor, sem barra — o overlay
           //    posiciona) OU encaixe no quadro cheio (scale+pad). Depois de um
-          //    crop as dimensões mudaram, então o encaixe também precisa rodar.
+          //    crop ou de uma rotação ímpar as dimensões mudaram, então o encaixe
+          //    também precisa rodar.
           const pip = c.transform;
+          const oddRotate = c.rotate === 90 || c.rotate === 270;
           if (pip) {
             const pw = Math.max(2, Math.round((pip.scale * w) / 2) * 2); // par
             vf.push(`scale=${pw}:-2`);
-          } else if (!info || info.width !== w || info.height !== h || (c.crop && !isFullCrop(c.crop))) {
+          } else if (!info || info.width !== w || info.height !== h || (c.crop && !isFullCrop(c.crop)) || oddRotate) {
             vf.push(
               `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
               `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
@@ -945,12 +981,12 @@ export function filterComplexArgs(
           }
           vf.push("setsar=1");
 
-          // 4) Velocidade: reescala o PTS (2× ⇒ metade do tempo). Antes do fps e
+          // 5) Velocidade: reescala o PTS (2× ⇒ metade do tempo). Antes do fps e
           //    da janela de alfa, que já contam no tempo de TIMELINE do clipe.
           if (sp !== 1) vf.push(`setpts=${(1 / sp).toFixed(6)}*PTS`);
           vf.push(`fps=${fps}`);
 
-          // 5) Alfa: envelope de opacidade (geq) OU opacidade constante, e por
+          // 6) Alfa: envelope de opacidade (geq) OU opacidade constante, e por
           //    cima a TRANSIÇÃO da sobreposição com o vizinho de mídia anterior.
           //    O tipo mora no clipe DE TRÁS (`transitionKind`): dissolve = fade
           //    no alfa (o de sempre); wipe = cortina por geq; slide = o x do
@@ -1005,9 +1041,19 @@ export function filterComplexArgs(
           const color = c.opacity !== undefined && c.opacity < 1
             ? `${c.title.color}@${c.opacity}`
             : c.title.color;
+          // Fundo (v0.14): a `box` do drawtext atrás do texto. `boxborderw` dá a
+          // margem entre a letra e a borda da caixa (senão o texto encosta). Com
+          // opacidade do clipe, a caixa esvai junto com a letra. Ausente = sem
+          // caixa, só a borda preta de sempre.
+          const box = c.title.bg
+            ? `box=1:boxcolor=${
+                c.opacity !== undefined && c.opacity < 1 ? `${c.title.bg}@${c.opacity}` : c.title.bg
+              }:boxborderw=12:`
+            : "";
           const dt =
             `${font}text='${drawtextEscape(c.title.text)}':` +
             `fontsize=${c.title.fontSizePx}:fontcolor=${color}:` +
+            box +
             `borderw=2:bordercolor=black@0.6:` +
             `x=(w-text_w)/2:y=${titleY(c.title.anchor)}:` +
             `enable='between(t,${s},${e})'`;
@@ -1138,6 +1184,11 @@ export function degenerateClips(tl: Timeline): ExportClip[] | null {
   for (const c of clips) {
     if (c.path === undefined || c.srcIn === undefined) return null; // título
     if (c.title) return null;
+    // v0.14: imagem NÃO cabe no `-c copy` (o concat demuxer copia pacotes de um
+    // arquivo de mídia; um `.png` não tem stream de vídeo com duração pra copiar —
+    // precisa de `-loop 1 -t` e recodificar). Rotação/espelho idem: mexem no pixel.
+    if (c.image) return null;
+    if (c.rotate || c.flipH) return null;
     if (c.muted) return null;
     if (c.volume !== undefined && c.volume !== 1) return null;
     if (c.fadeInMs || c.fadeOutMs) return null;

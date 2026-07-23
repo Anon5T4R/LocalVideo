@@ -25,7 +25,7 @@ const info = (path: string): RawMediaInfo => ({
 });
 
 const timeline: Timeline = {
-  version: 3,
+  version: TVPROJ_VERSION,
   tracks: [
     {
       id: "v1",
@@ -52,7 +52,7 @@ describe(".tvproj v3 (formato corrente)", () => {
 
   it("guarda e reabre os filtros/velocidade/keyframes da v0.3 (ida e volta)", () => {
     const v3: Timeline = {
-      version: 3,
+      version: TVPROJ_VERSION,
       tracks: [
         {
           id: "v1",
@@ -89,7 +89,7 @@ describe(".tvproj v3 (formato corrente)", () => {
 
   it("guarda e reabre o tipo da transição (v0.4.1) — e joga fora valor inventado", () => {
     const withTrans: Timeline = {
-      version: 3,
+      version: TVPROJ_VERSION,
       tracks: [
         {
           id: "v1",
@@ -116,7 +116,7 @@ describe(".tvproj v3 (formato corrente)", () => {
 
   it("guarda e reabre a DIREÇÃO do wipe/slide (v0.9.2), sem bump de versão", () => {
     const comDir: Timeline = {
-      version: 3,
+      version: TVPROJ_VERSION,
       tracks: [
         {
           id: "v1",
@@ -143,7 +143,7 @@ describe(".tvproj v3 (formato corrente)", () => {
     // A versão do arquivo NÃO subiu: campo novo e opcional, e o app antigo que
     // ignora a chave continua vendo um wipe (na direção padrão) em vez de perder
     // a transição. Foi o que dispensou o bump — ver `TransitionDir`.
-    expect(JSON.parse(serializeProject(comDir, media)).version).toBe(3);
+    expect(JSON.parse(serializeProject(comDir, media)).version).toBe(TVPROJ_VERSION);
 
     // Direção inventada (arquivo editado à mão) não entra: cai no `lr` padrão,
     // e o clipe continua com o wipe que o usuário escolheu.
@@ -162,7 +162,7 @@ describe(".tvproj v3 (formato corrente)", () => {
     // faixa 0 — o "Áudio do sistema" virava um segundo microfone, calado, e só
     // no export alguém notava.
     const detached: Timeline = {
-      version: 3,
+      version: TVPROJ_VERSION,
       tracks: [
         {
           id: "v1",
@@ -245,13 +245,13 @@ describe(".tvproj v3 (formato corrente)", () => {
     );
   });
 
-  // A versão NÃO subiu com esta mudança (nenhuma chave nova — a `media` só ficou
-  // mais cheia). Prender isso aqui evita um bump por reflexo numa fatia futura:
-  // 4 faria toda build ≤0.10 recusar o arquivo. Ver o cabeçalho de
-  // `serializeProject` pro raciocínio inteiro.
-  it("pool inteiro NÃO exigiu bump de versão", () => {
+  // Serializar declara SEMPRE a versão corrente (`TVPROJ_VERSION`). O pool cheio
+  // não exigiu bump por si (nenhuma chave nova), mas o arquivo hoje declara 4 —
+  // a v0.14 subiu por causa da IMAGEM (ver o cabeçalho de `TIMELINE_VERSION`).
+  // Prender à constante evita um teste que quebra a cada bump legítimo.
+  it("serializa com a versão corrente do formato", () => {
     const doc = JSON.parse(serializeProject(timeline, { "C:\\orfao.mp4": info("C:\\orfao.mp4") }));
-    expect(doc.version).toBe(3);
+    expect(doc.version).toBe(TVPROJ_VERSION);
   });
 
   it("recusa arquivo que não é nosso, e não finge que abriu", () => {
@@ -289,7 +289,7 @@ describe(".tvproj v1 → migração (o projeto da v0.1 TEM que abrir)", () => {
       ],
     });
     const { timeline: tl, media } = parseProject(v1);
-    expect(tl.version).toBe(3);
+    expect(tl.version).toBe(TVPROJ_VERSION);
     expect(tl.tracks.map((t) => t.kind)).toEqual(["video", "audio"]);
     // Posições acumuladas: c1 em 0 (2s), c2 logo depois em 2000 (3s).
     expect(tl.tracks[0].clips.map((c) => [c.startMs, c.durationMs, c.srcIn])).toEqual([
@@ -332,10 +332,11 @@ describe(".tvproj — mudo e ordem de trilha (v0.9)", () => {
     expect(back.timeline.tracks.map((t) => t.id)).toEqual(["a1", "v1"]);
   });
 
-  it("o arquivo declara `version: 3` — o bump é o que impede perda calada", () => {
-    // Campo OPCIONAL não muda o contrato: um app antigo abre este projeto (só
-    // perde o mudo). Bumpar faria o app antigo RECUSAR o arquivo, que é bem pior.
-    expect(JSON.parse(serializeProject(muted, media)).version).toBe(3);
+  it("o arquivo declara a versão corrente — o bump é o que impede perda calada", () => {
+    // O mudo (v0.9.1) subiu pra 3 porque um app antigo o descartaria calado ao
+    // salvar; a imagem (v0.14) subiu pra 4 porque um app antigo trataria o png
+    // como vídeo e exportaria preto. Nos dois casos, recusar é melhor que perder.
+    expect(JSON.parse(serializeProject(muted, media)).version).toBe(TVPROJ_VERSION);
   });
 
   it("projeto SEM o campo abre com as trilhas soando (o padrão por omissão)", () => {

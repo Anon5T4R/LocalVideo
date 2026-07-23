@@ -8,6 +8,7 @@ import {
   clipDuration,
   clipSpeed,
   DEFAULT_TRANSITION_MS,
+  isImageClip,
   isTitle,
   locate,
   overlapWithNext,
@@ -164,6 +165,25 @@ function TitleFields({ c, doUpdateClip }: { c: Clip; doUpdateClip: UpdateClip })
           <input type="color" value={hexOf(tp.color)} onChange={(e) => set({ color: e.target.value })} />
         </label>
       </div>
+      {/* Fundo (v0.14): caixa atrás do texto pra legenda legível sobre fundo
+          claro. Checkbox liga/desliga; sem ele, `bg` é removido (o .tvproj não
+          engorda com o valor). A opacidade do fundo acompanha a do clipe. */}
+      <div className="field-row">
+        <label className="field-check">
+          <input
+            type="checkbox"
+            checked={tp.bg !== undefined}
+            onChange={(e) => set({ bg: e.target.checked ? "#000000" : undefined })}
+          />
+          <span>{t("title.bg")}</span>
+        </label>
+        {tp.bg !== undefined ? (
+          <label className="field">
+            <span>{t("title.bgColor")}</span>
+            <input type="color" value={hexOf(tp.bg)} onChange={(e) => set({ bg: e.target.value })} />
+          </label>
+        ) : null}
+      </div>
       <label className="field">
         <span>{t("title.position")}</span>
         <select value={tp.anchor} onChange={(e) => set({ anchor: e.target.value as TitleAnchor })}>
@@ -202,6 +222,7 @@ function MediaFields({
   doSetSpeed: (id: string, speed: number) => void;
 }) {
   const info = c.path ? media[c.path] : undefined;
+  const isImg = isImageClip(c);
   const vol = c.volume ?? 1;
   const hasAudio = info?.hasAudio ?? false;
   const nTracks = info?.audioTracks.length ?? 0;
@@ -351,15 +372,19 @@ function MediaFields({
         />
       </Section>
 
-      <Section id="speed" title={t("clip.secSpeed")} active={sp !== 1} summary={`${sp}×`}>
-        <Speed c={c} doSetSpeed={doSetSpeed} />
-      </Section>
+      {/* Velocidade não existe pra imagem parada (não há fonte pra acelerar). */}
+      {!isImg ? (
+        <Section id="speed" title={t("clip.secSpeed")} active={sp !== 1} summary={`${sp}×`}>
+          <Speed c={c} doSetSpeed={doSetSpeed} />
+        </Section>
+      ) : null}
 
       <Section id="trans" title={t("clip.secTransition")} active={hasTransition(loc)}>
         <Transition c={c} loc={loc} doUpdateClip={doUpdateClip} />
       </Section>
 
-      <Section id="crop" title={t("clip.secCropPos")} active={cropActive}>
+      <Section id="crop" title={t("clip.secCropPos")} active={cropActive || !!c.rotate || !!c.flipH}>
+        <Orient c={c} doUpdateClip={doUpdateClip} />
         <Crop c={c} doUpdateClip={doUpdateClip} />
         <Motion c={c} doUpdateClip={doUpdateClip} />
       </Section>
@@ -368,13 +393,17 @@ function MediaFields({
         <Color c={c} doUpdateClip={doUpdateClip} />
       </Section>
 
-      <button
-        className="block"
-        disabled={!info || (c.srcIn === 0 && srcOut(c) === info.durationMs && clipSpeed(c) === 1)}
-        onClick={() => info && doUpdateClip(c.id, { srcIn: 0, durationMs: info.durationMs, speed: 1 })}
-      >
-        {t("clip.reset")}
-      </button>
+      {/* "Voltar ao trecho inteiro" só faz sentido pra mídia com janela-fonte:
+          uma imagem não tem trecho de arquivo pra restaurar. */}
+      {!isImg ? (
+        <button
+          className="block"
+          disabled={!info || (c.srcIn === 0 && srcOut(c) === info.durationMs && clipSpeed(c) === 1)}
+          onClick={() => info && doUpdateClip(c.id, { srcIn: 0, durationMs: info.durationMs, speed: 1 })}
+        >
+          {t("clip.reset")}
+        </button>
+      ) : null}
       {/* (A dica de arrastar + o playhead saíram daqui na v0.9.2: eram a SEGUNDA
           linha permanente de dica na tela, e agora vivem na statusbar única da
           timeline, que já mostra os dois com o clipe selecionado.) */}
@@ -535,6 +564,47 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
         {t("clip.transRemove")}
       </button>
       <span className="muted small">{t("clip.transKindHint")}</span>
+    </div>
+  );
+}
+
+/* ---------------- orientação: rotação + espelho (v0.14) ---------------- */
+function Orient({ c, doUpdateClip }: { c: Clip; doUpdateClip: UpdateClip }) {
+  const rot = c.rotate ?? 0;
+  return (
+    <div className="fields">
+      <div className="sec-head">
+        <span className="muted small">{t("clip.orient")}</span>
+        {c.rotate || c.flipH ? (
+          <button className="mini" onClick={() => doUpdateClip(c.id, { rotate: null, flipH: null })}>
+            {t("clip.resetFilter")}
+          </button>
+        ) : null}
+      </div>
+      <label className="field">
+        <span>{t("clip.rotate")}</span>
+        <select
+          value={rot}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            // 0 REMOVE a chave (padrão implícito, .tvproj enxuto).
+            doUpdateClip(c.id, { rotate: v === 0 ? null : (v as 90 | 180 | 270) });
+          }}
+        >
+          <option value={0}>{t("clip.rotNone")}</option>
+          <option value={90}>90°</option>
+          <option value={180}>180°</option>
+          <option value={270}>270°</option>
+        </select>
+      </label>
+      <label className="field-check">
+        <input
+          type="checkbox"
+          checked={!!c.flipH}
+          onChange={(e) => doUpdateClip(c.id, { flipH: e.target.checked ? true : null })}
+        />
+        <span>{t("clip.flipH")}</span>
+      </label>
     </div>
   );
 }

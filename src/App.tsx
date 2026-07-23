@@ -16,13 +16,16 @@ import Toasts from "./components/Toasts";
 import { t } from "./lib/i18n";
 import { shouldIgnoreShortcut } from "./lib/keys";
 import Icon from "./components/Icon";
-import { stepFrames } from "./lib/probe";
+import { IMAGE_EXT, stepFrames } from "./lib/probe";
 import { baseVideoTrack, clipCount, timelineDuration, timeToClip } from "./lib/timeline";
 import { baseName, useEditor } from "./state/editor";
 import { useExport } from "./state/export";
 import { useUi } from "./state/ui";
 
 const VIDEO_EXT = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "mpg", "mpeg", "wmv", "ts", "flv"];
+// Imagens paradas entram como clipe de duração livre (v0.14). Mesmo caminho de
+// import; o editor marca a flag `image` pela extensão (ver `isImagePath`).
+const MEDIA_EXT = [...VIDEO_EXT, ...IMAGE_EXT];
 
 /**
  * O arquivo que o SO está arrastando está sobre o PAINEL de mídia?
@@ -64,7 +67,52 @@ export default function App() {
 
   useEffect(() => {
     void ed.init();
+    // Rascunho (v0.14): ao abrir com a tela em branco, recupera o último estado
+    // salvo automaticamente — a rede de segurança pra quem fechou sem gravar em
+    // arquivo. NUNCA por cima de trabalho já na tela (projeto aberto por arg).
+    const s = useEditor.getState();
+    if (!hasWork(s)) {
+      void s.restoreDraft().then((ok) => {
+        if (ok) useUi.getState().pushToast("info", t("draft.restored"));
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Autosave do rascunho (v0.14): grava a timeline no localStorage com DEBOUNCE
+   * de 1,5 s e TETO de 10 s. O teto é a lição do OpenObsidian (`debounce de save
+   * precisa de teto`): sem ele, uma edição contínua — arrastar uma alça, digitar
+   * um título — reiniciaria o timer a cada tique e ficaria minutos sem gravar; um
+   * fechamento no meio levaria tudo. Com o teto, um fluxo que passa de 10 s grava
+   * no meio. Só quando `dirty` (projeto salvo/limpo não tem o que proteger).
+   */
+  const draftTimer = useRef<number | null>(null);
+  const draftSince = useRef<number>(0);
+  useEffect(() => {
+    if (!ed.dirty) return;
+    if (draftSince.current === 0) draftSince.current = Date.now();
+    if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+    const elapsed = Date.now() - draftSince.current;
+    const wait = Math.min(1500, Math.max(0, 10000 - elapsed));
+    draftTimer.current = window.setTimeout(() => {
+      useEditor.getState().writeDraft();
+      draftSince.current = 0;
+      draftTimer.current = null;
+    }, wait);
+    return () => {
+      if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+    };
+  }, [ed.history.present, ed.media, ed.dirty]);
+
+  // Flush do rascunho ao fechar a janela (belt-and-suspenders além do debounce):
+  // o pior caso vira ~0 s de perda em vez de ~1,5 s.
+  useEffect(() => {
+    const flush = () => {
+      if (useEditor.getState().dirty) useEditor.getState().writeDraft();
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
   }, []);
 
   /** Não há CLIPE na timeline. É o que cala o exportar, o título e os
@@ -87,7 +135,7 @@ export default function App() {
   const pickAndImport = useCallback(async () => {
     const picked = await openDialog({
       multiple: true,
-      filters: [{ name: t("proj.dlgVideo"), extensions: VIDEO_EXT }],
+      filters: [{ name: t("proj.dlgVideo"), extensions: MEDIA_EXT }],
     });
     if (!picked) return;
     await ed.importPaths(Array.isArray(picked) ? picked : [picked]);
@@ -176,7 +224,7 @@ export default function App() {
       const onPool = overPool(e.position);
       setDropping(null);
       const paths = e.paths.filter((p) =>
-        VIDEO_EXT.includes(p.split(".").pop()?.toLowerCase() ?? ""),
+        MEDIA_EXT.includes(p.split(".").pop()?.toLowerCase() ?? ""),
       );
       const proj = e.paths.find((p) => p.toLowerCase().endsWith(".tvproj"));
       // Projeto ganha de tudo, inclusive de cair no painel: soltar um `.tvproj`

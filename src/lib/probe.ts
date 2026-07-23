@@ -117,6 +117,18 @@ export function parseFrameRate(s: string | null | undefined): number {
 /** Fps padrão quando o arquivo não declara — só pra grade dos atalhos de seta. */
 export const FALLBACK_FPS = 30;
 
+/** Imagens PARADAS aceitas como clipe (v0.14). `gif` fica DE FORA de propósito:
+ *  é animado (tem duração real no ffprobe) e entra como vídeo normal — tratá-lo
+ *  como imagem parada congelaria a animação. */
+export const IMAGE_EXT = ["png", "jpg", "jpeg", "webp", "bmp"];
+
+/** É um arquivo de imagem parada? (pela extensão — o probe do ffprobe também
+ *  sonda imagem, mas quem decide o TIPO do clipe no import é a extensão.) */
+export function isImagePath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXT.includes(ext);
+}
+
 /**
  * Fps confiável do arquivo. Prefere `avg_frame_rate` (média REAL dos quadros);
  * o `r_frame_rate` é a menor taxa que expressa todos os timestamps e num vídeo

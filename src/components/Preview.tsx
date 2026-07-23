@@ -21,6 +21,7 @@ import {
   clipEnd,
   clipSpeed,
   endHit,
+  isImageClip,
   isMedia,
   locate,
   srcOut,
@@ -188,13 +189,23 @@ export default function Preview() {
         sources.current.delete(path);
       }
     }
+    // Mesma poda pro cache de imagens (o bitmap segura memória de GPU).
+    for (const [path, bmp] of images.current) {
+      if (!alive.has(path)) {
+        bmp?.close();
+        images.current.delete(path);
+      }
+    }
   }, [timeline]);
 
   useEffect(() => {
     const map = sources.current;
+    const imgs = images.current;
     return () => {
       for (const fs of map.values()) fs.dispose();
       map.clear();
+      for (const bmp of imgs.values()) bmp?.close();
+      imgs.clear();
     };
   }, []);
 
@@ -206,6 +217,31 @@ export default function Preview() {
       sources.current.set(path, fs);
     }
     return fs;
+  };
+
+  /**
+   * Cache de ImageBitmap por caminho (v0.14): imagem PARADA não passa pelo
+   * WebCodecs (não é vídeo) — carrega uma vez via `<img>`/`createImageBitmap` e o
+   * mesmo bitmap serve pra qualquer instante do clipe. O bitmap é REUTILIZADO
+   * (nunca `close()` no laço de composição): o dono é este cache, que o libera
+   * quando o arquivo sai da timeline. `null` guardado = falhou/carregando (a
+   * composição pinta preto embaixo, sem travar).
+   */
+  const images = useRef<Map<string, ImageBitmap | null>>(new Map());
+  const imageFor = async (path: string): Promise<ImageBitmap | null> => {
+    const cache = images.current;
+    if (cache.has(path)) return cache.get(path) ?? null;
+    // Marca "em curso" pra dois quadros seguidos não decodificarem duas vezes.
+    cache.set(path, null);
+    try {
+      const res = await fetch(convertFileSrc(path));
+      if (!res.ok) return null;
+      const bmp = await createImageBitmap(await res.blob());
+      cache.set(path, bmp);
+      return bmp;
+    } catch {
+      return null;
+    }
   };
 
   /* ---------- o revezamento dos dois <video> ---------- */
@@ -304,17 +340,25 @@ export default function Preview() {
 
       // Decodifica os quadros das camadas de mídia ANTES de pintar, pra a tela
       // não piscar meia-composição enquanto os arquivos respondem em ritmos
-      // diferentes. Título não decodifica — é texto.
-      const frames = new Map<string, VideoFrame | null>();
+      // diferentes. Título não decodifica — é texto. Imagem vem do cache de
+      // ImageBitmap (não do WebCodecs), e é REUTILIZÁVEL — não se fecha (`owned`
+      // marca só os VideoFrame, que são por-quadro e precisam de `close()`).
+      const frames = new Map<string, VideoFrame | ImageBitmap | null>();
+      const owned = new Set<string>();
       for (const l of layers) {
         if (l.kind !== "media") continue;
         try {
-          frames.set(l.clip.id, await sourceFor(l.clip.path!).frameAt(Math.round(l.srcTimeMs * 1000)));
+          if (isImageClip(l.clip)) {
+            frames.set(l.clip.id, await imageFor(l.clip.path!));
+          } else {
+            frames.set(l.clip.id, await sourceFor(l.clip.path!).frameAt(Math.round(l.srcTimeMs * 1000)));
+            owned.add(l.clip.id);
+          }
         } catch {
           frames.set(l.clip.id, null);
         }
         if (dead) {
-          for (const f of frames.values()) f?.close();
+          for (const [id, f] of frames) if (owned.has(id)) (f as VideoFrame | null)?.close();
           return;
         }
       }
@@ -330,7 +374,7 @@ export default function Preview() {
           const frame = frames.get(l.clip.id) ?? null;
           if (frame) {
             drawMedia(ctx, frame, l.clip, dims.w, dims.h, l.alpha, l.transition);
-            frame.close();
+            if (owned.has(l.clip.id)) (frame as VideoFrame).close();
           }
         } else {
           drawTitle(ctx, l.clip, dims.w, dims.h, l.alpha);
@@ -1174,15 +1218,16 @@ function targetDims(
  */
 function drawMedia(
   ctx: CanvasRenderingContext2D,
-  frame: VideoFrame,
+  frame: VideoFrame | ImageBitmap,
   clip: Clip,
   W: number,
   H: number,
   alpha: number,
   transition?: TransitionState,
 ): void {
-  const fw = frame.displayWidth;
-  const fh = frame.displayHeight;
+  // Dimensões da fonte: VideoFrame fala `displayWidth`; ImageBitmap fala `width`.
+  const fw = (frame as VideoFrame).displayWidth ?? (frame as ImageBitmap).width;
+  const fh = (frame as VideoFrame).displayHeight ?? (frame as ImageBitmap).height;
   // Recorte na fonte.
   let sx = 0;
   let sy = 0;
@@ -1193,6 +1238,20 @@ function drawMedia(
     sy = clip.crop.y * fh;
     sw = Math.max(1, clip.crop.w * fw);
     sh = Math.max(1, clip.crop.h * fh);
+  }
+
+  // Orientação (v0.14): pré-orienta a região JÁ RECORTADA num canvas offscreen —
+  // crop primeiro, rotação/espelho depois, a MESMA ordem do export (`orientFilters`
+  // roda após o crop no compilador). Daí em diante o resto (encaixe/PiP/transição)
+  // opera na fonte orientada, sem recorte extra, e a prévia bate com o arquivo.
+  let blit: CanvasImageSource = frame;
+  if (clip.rotate || clip.flipH) {
+    const oriented = orientToCanvas(frame, sx, sy, sw, sh, clip.rotate, clip.flipH);
+    blit = oriented;
+    sx = 0;
+    sy = 0;
+    sw = oriented.width;
+    sh = oriented.height;
   }
   const aspect = sw / sh;
 
@@ -1205,7 +1264,7 @@ function drawMedia(
     const dh = dw / aspect;
     const dx = clip.transform.x * W;
     const dy = clip.transform.y * H;
-    ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+    ctx.drawImage(blit, sx, sy, sw, sh, dx, dy, dw, dh);
   } else {
     // Quadro cheio, com barra (nunca esticado) — igual ao scale+pad do export.
     const scale = Math.min(W / sw, H / sh);
@@ -1229,7 +1288,7 @@ function drawMedia(
       ctx.fillStyle = "#000";
       ctx.fillRect(odx, ody, W, H);
       ctx.filter = f;
-      ctx.drawImage(frame, sx, sy, sw, sh, dx + odx, dy + ody, dw, dh);
+      ctx.drawImage(blit, sx, sy, sw, sh, dx + odx, dy + ody, dw, dh);
     } else if (transition?.kind === "wipe") {
       const r = wipeRect(transition.dir, transition.progress, W, H);
       ctx.save();
@@ -1241,14 +1300,49 @@ function drawMedia(
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
       ctx.filter = f;
-      ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+      ctx.drawImage(blit, sx, sy, sw, sh, dx, dy, dw, dh);
       ctx.restore();
     } else {
-      ctx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+      ctx.drawImage(blit, sx, sy, sw, sh, dx, dy, dw, dh);
     }
   }
   ctx.globalAlpha = 1;
   ctx.filter = "none";
+}
+
+/**
+ * Recorta e ORIENTA uma fonte num canvas offscreen (v0.14): tira a região
+ * `[sx,sy,sw,sh]`, gira `rotate` graus horário e espelha se `flipH`. Devolve um
+ * canvas do tamanho JÁ ORIENTADO (90/270 trocam largura×altura). É o gêmeo em
+ * canvas do `orientFilters` do compilador — a ordem crop→rotação→espelho é a
+ * mesma, pra prévia e export desenharem o mesmo quadro.
+ */
+function orientToCanvas(
+  frame: CanvasImageSource,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  rotate: 90 | 180 | 270 | undefined,
+  flipH: boolean | undefined,
+): HTMLCanvasElement {
+  const odd = rotate === 90 || rotate === 270;
+  const ow = odd ? sh : sw;
+  const oh = odd ? sw : sh;
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(ow));
+  cv.height = Math.max(1, Math.round(oh));
+  const c = cv.getContext("2d")!;
+  c.translate(cv.width / 2, cv.height / 2);
+  // O canvas COMPÕE a matriz (T·S·R): o `drawImage` sofre a transformação da
+  // DIREITA pra esquerda — ou seja, `rotate` age no ponto ANTES do `scale`. Pra
+  // reproduzir a cadeia do export (`transpose` e DEPOIS `hflip` = espelho após a
+  // rotação), o `scale` vem no código ANTES do `rotate`.
+  if (flipH) c.scale(-1, 1);
+  if (rotate) c.rotate((rotate * Math.PI) / 180);
+  // Depois de girar, o sistema de eixos é o da fonte (sw×sh): centraliza nela.
+  c.drawImage(frame, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
+  return cv;
 }
 
 /** Desenha um título como TEXTO no canvas (não chama ffmpeg na prévia). Espelha
@@ -1276,6 +1370,24 @@ function drawTitle(
   } else {
     ctx.textBaseline = "alphabetic";
     y = H - H * 0.08;
+  }
+  // Fundo (v0.14): a caixa atrás do texto, espelhando a `box` do drawtext
+  // (`boxborderw=12`). Desenhada ANTES do texto. A altura vem das métricas da
+  // fonte (ascent+descent), a largura do texto medido — mais 12px de margem em
+  // volta, o mesmo do export.
+  if (tp.bg) {
+    const pad = 12;
+    const m = ctx.measureText(tp.text);
+    const asc = m.actualBoundingBoxAscent || tp.fontSizePx * 0.8;
+    const desc = m.actualBoundingBoxDescent || tp.fontSizePx * 0.2;
+    const bw = m.width + pad * 2;
+    const bh = asc + desc + pad * 2;
+    let by: number;
+    if (tp.anchor === "top") by = y - pad;
+    else if (tp.anchor === "center") by = y - asc - pad;
+    else by = y - asc - pad;
+    ctx.fillStyle = tp.bg;
+    ctx.fillRect(x - bw / 2, by, bw, bh);
   }
   ctx.lineJoin = "round";
   ctx.lineWidth = 4;

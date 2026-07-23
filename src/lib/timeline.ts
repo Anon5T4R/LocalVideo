@@ -34,8 +34,17 @@
  *  Perda silenciosa de trabalho é pior que recusa explícita: com o bump o app
  *  antigo diz "projeto de versão mais nova" e o usuário sabe o que fazer.
  *  Decisão do João em 2026-07-19 ("não tem problema perder a retrocompat dessa
- *  vez"), possível porque a suíte tem um usuário só e ele atualiza tudo. */
-export const TIMELINE_VERSION = 3;
+ *  vez"), possível porque a suíte tem um usuário só e ele atualiza tudo.
+ *
+ *  **4** desde a v0.14.0 (paridade B15: imagem como clipe, rotação/espelhar,
+ *  fundo de título). Os campos novos são opcionais, mas o de IMAGEM força o bump
+ *  por um motivo mais forte que o do mudo: um app ≤0.13 não só DESCARTARIA a flag
+ *  `image` — ele MISINTERPRETARIA o clipe, tratando o `.png` como vídeo e
+ *  mandando `trim`/`-i` sem `-loop 1` pro ffmpeg. O export sairia PRETO ou
+ *  quebrado, não só "sem o efeito". Recusar o projeto ("versão mais nova") é o
+ *  comportamento honesto. Rotação/espelhar/fundo, sozinhos, seriam da classe do
+ *  mudo (descarte silencioso muda o vídeo); a imagem os arrasta pro bump junto. */
+export const TIMELINE_VERSION = 4;
 
 export type TrackKind = "video" | "audio";
 
@@ -50,6 +59,12 @@ export interface TitleProps {
   /** Cor no formato do ffmpeg: "#RRGGBB" ou nome ("white"). */
   color: string;
   anchor: TitleAnchor;
+  /** Cor do FUNDO atrás do texto (a `box` do drawtext), no formato do ffmpeg.
+   *  Ausente = sem caixa (o comportamento até a v0.13: só a borda preta). Serve
+   *  pra legenda legível sobre fundo claro — o que o editor do LocalMedia tinha e
+   *  aqui faltava (paridade B15). Guardar a cor (e não um booleano) deixa escolher
+   *  preto translúcido "black@0.5" ou uma faixa sólida. */
+  bg?: string;
 }
 
 /** Recorte do frame-fonte, em FRAÇÕES 0..1 (resolução-independente: guardar em
@@ -177,9 +192,23 @@ export interface Clip {
   fadeInMs?: number;
   fadeOutMs?: number;
 
+  /** Imagem PARADA (PNG/JPEG/WebP/BMP): um clipe de duração LIVRE, sem janela-
+   *  fonte (uma imagem não tem "quadro N"). Distingue do vídeo pra: o export
+   *  entrar com `-loop 1 -t`, o aparar/dividir não mexer em `srcIn`, a velocidade
+   *  ser inerte e a prévia pintar por `<img>` em vez de decodificar quadro. É
+   *  mídia (`path` presente) — `isMedia` continua true —, só que sem tempo-fonte.
+   *  Ausente = vídeo/áudio normal. Paridade com o editor do LocalMedia (B15). */
+  image?: boolean;
+
   /* --- vídeo --- */
   /** Opacidade 0..1 pra overlay/título. `undefined` = 1 (opaco). */
   opacity?: number;
+  /** Rotação em GRAUS no sentido horário: 90, 180 ou 270. Ausente/0 = sem girar.
+   *  Vídeo gravado deitado, ou imagem na orientação errada — o `transpose`/`
+   *  rotate` do export e um `rotate()` no canvas da prévia. Paridade B15. */
+  rotate?: 90 | 180 | 270;
+  /** Espelhar na horizontal (`hflip`). Ausente = não espelha. Paridade B15. */
+  flipH?: boolean;
 
   /* --- filtros por clipe (v0.3) --- */
   /** Recorte do frame-fonte (frações 0..1). Ausente = usa o quadro inteiro. */
@@ -260,6 +289,22 @@ export function isTitle(c: Clip): boolean {
 export function isMedia(c: Clip): boolean {
   return c.path !== undefined;
 }
+/** Imagem parada (mídia SEM janela-fonte). É a pergunta que a matemática de corte
+ *  faz pra decidir se mexe em `srcIn`/velocidade: uma imagem não tem "avançar no
+ *  arquivo", então divide/apara/velocidade a tratam como um título com pixels. */
+export function isImageClip(c: Clip): boolean {
+  return c.image === true;
+}
+/** Mídia com TEMPO-FONTE de verdade (vídeo/áudio): mídia que não é imagem. É o
+ *  gate de toda conta que avança `srcIn` ou consome fonte — a imagem fica de
+ *  fora, porque avançar no arquivo de uma imagem não quer dizer nada. */
+export function hasSourceWindow(c: Clip): boolean {
+  return isMedia(c) && !isImageClip(c);
+}
+
+/** Duração padrão de uma imagem recém-solta na timeline (o usuário apara depois).
+ *  5 s é o costume dos NLEs pra slide — visível sem ser eterno. */
+export const DEFAULT_IMAGE_MS = 5000;
 
 /** Quanto o clipe ocupa na timeline. */
 export function clipDuration(c: Clip): number {
@@ -355,7 +400,10 @@ export function timeToClip(track: Track | null, t: number): Hit | null {
   for (let i = 0; i < track.clips.length; i++) {
     const c = track.clips[i];
     const d = clipDuration(c);
-    if (d === 0 || !isMedia(c)) continue;
+    // Imagem NÃO entra aqui: `timeToClip` é a fonte do `<video>` (play + quadro
+    // exato) e um `<video>` não decodifica png. A imagem aparece pela composição
+    // (`layersAt`), que pinta no canvas. Buraco pro `<video>`, imagem no canvas.
+    if (d === 0 || !hasSourceWindow(c)) continue;
     if (t >= c.startMs && t < clipEnd(c)) {
       // Tempo-fonte anda `speed` vezes mais rápido que o tempo de timeline.
       best = {
@@ -380,7 +428,9 @@ export function endHit(track: Track | null): Hit | null {
   let bestEnd = -1;
   for (let i = 0; i < track.clips.length; i++) {
     const c = track.clips[i];
-    if (clipDuration(c) === 0 || !isMedia(c)) continue;
+    // Mesma razão do `timeToClip`: o `endHit` posiciona o `<video>` no último
+    // quadro, e imagem não vai pro `<video>`.
+    if (clipDuration(c) === 0 || !hasSourceWindow(c)) continue;
     if (clipEnd(c) >= bestEnd) {
       bestEnd = clipEnd(c);
       last = { clip: c, index: i, srcTime: srcOut(c), clipStart: c.startMs };
@@ -440,7 +490,7 @@ function withTrack(tl: Timeline, ti: number, clips: Clip[]): Timeline {
  */
 export function appendMedia(
   tl: Timeline,
-  media: { path: string; srcIn: number; srcOut: number },
+  media: { path: string; srcIn: number; srcOut: number; image?: boolean },
 ): Timeline {
   const ti = tl.tracks.findIndex((t) => t.kind === "video");
   if (ti < 0) return tl;
@@ -452,6 +502,7 @@ export function appendMedia(
     durationMs: Math.max(0, media.srcOut - media.srcIn),
     path: media.path,
     srcIn: media.srcIn,
+    ...(media.image ? { image: true } : {}),
   };
   return withTrack(tl, ti, [...track.clips, clip]);
 }
@@ -481,7 +532,7 @@ export function insertMediaAt(
   tl: Timeline,
   trackId: string,
   startMs: number,
-  media: { path: string; srcIn: number; srcOut: number },
+  media: { path: string; srcIn: number; srcOut: number; image?: boolean },
 ): Timeline {
   const ti = tl.tracks.findIndex((t) => t.id === trackId);
   if (ti < 0) return tl;
@@ -495,6 +546,7 @@ export function insertMediaAt(
     durationMs,
     path: media.path,
     srcIn: Math.max(0, Math.round(media.srcIn)),
+    ...(media.image ? { image: true } : {}),
   };
   return withTrack(tl, ti, [...tl.tracks[ti].clips, clip]);
 }
@@ -771,9 +823,11 @@ export function splitAt(tl: Timeline, id: string, at: number): Timeline {
     id: newId(),
     startMs: at,
     durationMs: clipDuration(clip) - leftDur,
-    // Mídia: a metade da direita começa mais adiante no arquivo-fonte — e com
-    // velocidade, o avanço na fonte é `leftDur * speed` (não `leftDur`).
-    ...(isMedia(clip) ? { srcIn: (clip.srcIn ?? 0) + leftDur * clipSpeed(clip) } : {}),
+    // Mídia com fonte: a metade da direita começa mais adiante no arquivo-fonte —
+    // e com velocidade, o avanço na fonte é `leftDur * speed` (não `leftDur`).
+    // Imagem não tem "mais adiante" (um quadro só): as duas metades mostram a
+    // mesma imagem, sem `srcIn` — igual a um título dividido.
+    ...(hasSourceWindow(clip) ? { srcIn: (clip.srcIn ?? 0) + leftDur * clipSpeed(clip) } : {}),
   };
   const clips = tl.tracks[ti].clips.slice();
   clips.splice(loc.ci, 1, left, right);
@@ -810,7 +864,10 @@ export function setClipEdge(
   const { clip, ti } = loc;
   const end = clipEnd(clip);
   const oldEnd = end;
-  const media = isMedia(clip);
+  // "Mídia" AQUI é mídia com janela-fonte: só ela tem `srcIn` que anda e limite
+  // de fim de arquivo. Imagem apara como título — duração livre, sem `srcLimit`,
+  // sem mexer em `srcIn` (é o que dá o "estique a imagem o quanto quiser").
+  const media = hasSourceWindow(clip);
   // Com velocidade, 1 ms de borda anda `speed` ms na fonte — os limites de fonte
   // (srcIn≥0, srcOut≤arquivo) viram limites de tempo de timeline dividindo por
   // `speed`.
@@ -1019,7 +1076,9 @@ export function setClipSpeed(tl: Timeline, id: string, speed: number): Timeline 
   const loc = locate(tl, id);
   if (!loc) return tl;
   const { clip, track, ti } = loc;
-  if (!isMedia(clip)) return tl;
+  // Imagem não tem velocidade (não há fonte pra acelerar): é não-evento, como o
+  // título. Só mídia com janela-fonte muda de velocidade.
+  if (!hasSourceWindow(clip)) return tl;
   // 0.25..4: fora disso o `atempo` do áudio precisaria de correntes longas e o
   // resultado deixa de ser útil (fica irreconhecível). É a faixa dos NLEs.
   const sp = Math.max(0.25, Math.min(4, speed));
