@@ -33,6 +33,7 @@ import {
   setClipEdge,
   setClipSpeed,
   setTransition,
+  setTransitionRipple,
   splitAt,
   srcOut,
   srcWindowMs,
@@ -327,6 +328,55 @@ describe("removeClip / updateClip / setTransition", () => {
     // a dura 1000; pedir 5000 de transição só encosta até 1000.
     const t = setTransition(base(), "a", 5000);
     expect(overlapWithNext(t.tracks[0], 0)).toBe(1000);
+  });
+});
+
+describe("setTransitionRipple — a transição de um clique (sem abrir buraco)", () => {
+  it("cria a sobreposição puxando o seguinte E a fila atrás dele", () => {
+    // a=[0,1000), b=[1000,3000), c=[3000,6000). Transição de 400 em a→b:
+    // b vai pra 600 e c anda os MESMOS 400 (fica colado no fim de b, 2600).
+    const t = setTransitionRipple(base(), "a", 400);
+    expect(t.tracks[0].clips.map((c) => c.startMs)).toEqual([0, 600, 2600]);
+    expect(overlapWithNext(t.tracks[0], 0)).toBe(400);
+    // b–c continuam adjacentes: era o buraco que o setTransition simples abria.
+    expect(overlapWithNext(t.tracks[0], 1)).toBe(0);
+  });
+
+  it("remover (0 ms) desfaz pelo mesmo caminho — a fila volta colada", () => {
+    const withTrans = setTransitionRipple(base(), "a", 400);
+    const t = setTransitionRipple(withTrans, "a", 0);
+    expect(t.tracks[0].clips.map((c) => c.startMs)).toEqual([0, 1000, 3000]);
+  });
+
+  it("grampeia pela duração dos dois clipes, como a alça", () => {
+    const t = setTransitionRipple(base(), "a", 5000);
+    expect(overlapWithNext(t.tracks[0], 0)).toBe(1000);
+  });
+
+  it("é não-evento sem próximo, com título no par, ou sem mudança", () => {
+    const t = base();
+    expect(setTransitionRipple(t, "c", 400)).toBe(t); // último da trilha
+    expect(setTransitionRipple(t, "zzz", 400)).toBe(t);
+    const withTitle = tl([
+      vtrack([media("a", 0, 1000), { id: "t1", startMs: 1000, durationMs: 2000, title: { text: "x", fontSizePx: 48, color: "#fff", anchor: "bottom" } }]),
+    ]);
+    expect(setTransitionRipple(withTitle, "a", 400)).toBe(withTitle);
+    // Pedir a sobreposição que já existe é não-evento (mesma referência).
+    const withTrans = setTransitionRipple(t, "a", 400);
+    expect(setTransitionRipple(withTrans, "a", 400)).toBe(withTrans);
+  });
+
+  it("título por cima da emenda anda junto (não fica órfão do corte)", () => {
+    // Um título que começa junto com b (legenda da cena) acompanha o ripple.
+    const t0 = tl([
+      vtrack([
+        media("a", 0, 1000),
+        media("b", 1000, 2000, 0, "b.mp4"),
+        { id: "t1", startMs: 1000, durationMs: 500, title: { text: "x", fontSizePx: 48, color: "#fff", anchor: "bottom" } },
+      ]),
+    ]);
+    const t = setTransitionRipple(t0, "a", 400);
+    expect(t.tracks[0].clips.find((c) => c.id === "t1")!.startMs).toBe(600);
   });
 });
 

@@ -19,14 +19,18 @@ import { formatDuration, formatTimecode, gapAdvance } from "../lib/probe";
 import {
   baseVideoTrack,
   clipEnd,
+  clipSpeed,
   endHit,
   isMedia,
   locate,
   srcOut,
   timelineDuration,
   timeToClip,
+  transitionDir,
   type Clip,
   type Transform,
+  type TransitionDir,
+  type TransitionKind,
 } from "../lib/timeline";
 import { useEditor } from "../state/editor";
 
@@ -62,7 +66,32 @@ export default function Preview() {
   const setPlaying = useEditor((s) => s.setPlaying);
   const selectedId = useEditor((s) => s.selectedId);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  /**
+   * DOIS `<video>` em revezamento (v0.13) — a cura do piscar preto na emenda.
+   *
+   * Com UM elemento, trocar de clipe era trocar o `src`: o elemento descarta o
+   * quadro, volta pra readyState 0 e mostra preto até o arquivo novo engatar —
+   * o "pisca" que aparecia em toda emenda de arquivos diferentes. Agora um slot
+   * é o ATIVO (visível, com som) e o outro é a RESERVA: ela pré-carrega o
+   * PRÓXIMO clipe, já posicionada no `srcIn` dele, muda e pausada. Na emenda,
+   * só os papéis trocam — o quadro novo já está decodificado.
+   *
+   * De brinde, a reserva vira o clipe de SAÍDA durante uma sobreposição: ela
+   * continua tocando embaixo enquanto o ativo entra por cima com
+   * opacidade/recorte/deslocamento (dissolve/wipe/slide) — a transição passa a
+   * se VER durante o play, aproximada, em vez de virar corte seco.
+   */
+  const vid0 = useRef<HTMLVideoElement>(null);
+  const vid1 = useRef<HTMLVideoElement>(null);
+  const vidRefs = [vid0, vid1];
+  const [activeSlot, setActiveSlot] = useState(0);
+  /** O que cada slot tem preparado: qual clipe e qual arquivo. Fora do estado
+   *  do React de propósito — é bookkeeping imperativo dos elementos, e mudar
+   *  não deve re-renderizar nada. */
+  const slotPrep = useRef<{ clipId: string | null; path: string | null }[]>([
+    { clipId: null, path: null },
+    { clipId: null, path: null },
+  ]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   /** Um decodificador por arquivo: abrir custa ler o arquivo, não se faz por seta. */
@@ -99,25 +128,48 @@ export default function Preview() {
   const fps = baseHit ? (media[hitPath]?.fps ?? 30) : 30;
   const baseExact = baseHit && !gone ? canDecodeExactly(hitPath) : false;
 
-  // O PRÓXIMO clipe de mídia da base à frente do playhead — só interessa quando
-  // se está num BURACO. Serve pra PRÉ-CARREGAR: apontamos o `<video>` (escondido)
-  // pra ele durante o vazio, com `preload="auto"`, pra quando o ticker chegar no
-  // clipe o play ser instantâneo. Sem isto, o `<video>` só ganhava `src` no
-  // limite do buraco e travava carregando do zero no meio da reprodução (o
-  // elemento fica em readyState 0 e o play não engata).
-  const nextBaseClip = useMemo(() => {
-    if (baseHit) return null;
+  // O PRÓXIMO clipe de mídia da base — quem a RESERVA pré-carrega. Dentro de um
+  // clipe é o vizinho da frente (a emenda que vem aí); num buraco é o clipe do
+  // outro lado do vazio (o aquecimento que a v0.8 já fazia, agora pelo slot).
+  const nextClip = useMemo(() => {
+    const after = baseHit ? baseHit.clipStart : playhead - 1;
     let best: Clip | null = null;
     for (const c of track?.clips ?? []) {
-      if (isMedia(c) && c.startMs >= playhead && (!best || c.startMs < best.startMs)) best = c;
+      if (!isMedia(c) || c.id === baseHit?.clip.id) continue;
+      if (c.startMs > after && (!best || c.startMs < best.startMs)) best = c;
     }
     return best;
   }, [track, baseHit, playhead]);
 
-  // O src do `<video>`: o clipe atual quando há um; senão o próximo (aquecendo no
-  // buraco). String vazia só quando não há nem um nem outro (fim do filme).
-  const warmPath = nextBaseClip && !missing.includes(nextBaseClip.path!) ? nextBaseClip.path! : "";
-  const src = baseHit && !gone ? convertFileSrc(hitPath) : warmPath ? convertFileSrc(warmPath) : "";
+  /**
+   * A transição EM CURSO na entrada do clipe atual, durante o play. Espelha a
+   * regra do `layersAt`/compilador: o tipo mora no clipe DE TRÁS, a geometria é
+   * a sobreposição, e PiP entrando não ganha transição espacial. `null` fora da
+   * janela — e é o que decide se a reserva (o clipe de saída) segue tocando.
+   */
+  const playXfade = useMemo(() => {
+    if (!playing || rate <= 0 || !baseHit || !track) return null;
+    const prev = baseHit.index > 0 ? track.clips[baseHit.index - 1] : undefined;
+    if (!prev || prev.path === undefined || baseHit.clip.transform) return null;
+    const ov = Math.max(
+      0,
+      Math.min(clipEnd(prev) - baseHit.clipStart, prev.durationMs, baseHit.clip.durationMs),
+    );
+    if (ov <= 0 || playhead >= baseHit.clipStart + ov) return null;
+    return {
+      prev,
+      startMs: baseHit.clipStart,
+      ov,
+      kind: (prev.transitionKind ?? "dissolve") as TransitionKind,
+      dir: transitionDir(prev),
+    };
+  }, [playing, rate, baseHit, track, playhead]);
+  const inXfade = !!playXfade;
+  /** Espelho em ref pro laço de rAF (que não pode remontar a cada quadro). */
+  const playXfadeRef = useRef(playXfade);
+  playXfadeRef.current = playXfade;
+  const activeSlotRef = useRef(activeSlot);
+  activeSlotRef.current = activeSlot;
 
   // Modo de pintura do canvas quando PARADO:
   //  - compor (várias camadas/filtros) se der pra decodificar tudo;
@@ -155,6 +207,87 @@ export default function Preview() {
     }
     return fs;
   };
+
+  /* ---------- o revezamento dos dois <video> ---------- */
+
+  // Quem é o ATIVO e o que a RESERVA prepara — num efeito SÓ, e a ordem importa.
+  // Eram dois efeitos, e a corrida mordeu (medida dirigindo a GUI): num seek pra
+  // um clipe que estava na reserva, o efeito do ativo pedia a troca de papéis
+  // (setActiveSlot) e o da reserva — rodando no MESMO commit, ainda com o slot
+  // velho — reciclava justamente o elemento que ia ser promovido, trocando o src
+  // dele; o load interrompia o play() e o catch desligava o filme. Unificado, a
+  // troca de papéis RETORNA antes de mexer na reserva (o efeito re-roda já com
+  // os papéis certos) e ninguém prepara por cima de ninguém.
+  useEffect(() => {
+    const prep = slotPrep.current;
+    const cur = baseHit && !gone ? baseHit.clip : null;
+    const a = activeSlot;
+
+    if (cur && prep[a].clipId !== cur.id) {
+      if (prep[1 - a].clipId === cur.id) {
+        // A reserva já é este clipe (pré-carregada e posicionada): troca de
+        // papéis e deixa o re-run (com os papéis novos) cuidar da reserva.
+        setActiveSlot(1 - a);
+        return;
+      }
+      // Caminho frio (seek pra longe, projeto recém-aberto): prepara o ativo
+      // diretamente — é o comportamento antigo, fora do fluxo contínuo.
+      const va = vidRefs[a].current;
+      if (va) {
+        if (prep[a].path !== cur.path) va.src = convertFileSrc(cur.path!);
+        prep[a] = { clipId: cur.id, path: cur.path! };
+      }
+    }
+
+    // A RESERVA pré-carrega o próximo clipe: src do arquivo, muda, pausada e já
+    // posicionada no `srcIn` — pra emenda ser só a troca de papéis. Durante uma
+    // sobreposição ela ainda é o clipe de SAÍDA tocando embaixo: não recicla
+    // até a janela fechar (é o dep em `inXfade` que re-roda este efeito no fim).
+    const s = 1 - a;
+    const vs = vidRefs[s].current;
+    if (!vs) return;
+    const xf = playXfadeRef.current;
+    if (xf && prep[s].clipId === xf.prev.id) return;
+    const nc = nextClip;
+    if (!nc || missing.includes(nc.path!)) return;
+    if (prep[s].clipId === nc.id) return;
+    if (prep[s].path !== nc.path) vs.src = convertFileSrc(nc.path!);
+    prep[s] = { clipId: nc.id, path: nc.path! };
+    vs.muted = true;
+    vs.pause();
+    const want = (nc.srcIn ?? 0) / 1000;
+    const seekReady = () => {
+      try {
+        vs.currentTime = want;
+      } catch {
+        /* metadados ainda não chegaram: o crave do play corrige na troca */
+      }
+    };
+    if (vs.readyState >= 1) seekReady();
+    else vs.onloadedmetadata = () => {
+      vs.onloadedmetadata = null;
+      seekReady();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseHit?.clip.id, gone, activeSlot, nextClip?.id, missing, inXfade]);
+
+  // O clipe de SAÍDA durante a sobreposição: a reserva segue tocando (muda —
+  // quem tem o som é o que entra, como o <video> único já fazia) até a janela
+  // fechar. Fora dela, reserva é reserva: pausada.
+  useEffect(() => {
+    const s = 1 - activeSlot;
+    const vs = vidRefs[s].current;
+    if (!vs) return;
+    const xf = playXfadeRef.current;
+    if (playing && rate > 0 && xf && slotPrep.current[s].clipId === xf.prev.id) {
+      vs.muted = true;
+      vs.playbackRate = rate;
+      if (vs.paused) void vs.play().catch(() => {});
+    } else {
+      vs.pause();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, rate, activeSlot, inXfade]);
 
   /* ---------- COMPOSIÇÃO (parado, WYSIWYG) ---------- */
 
@@ -263,11 +396,19 @@ export default function Preview() {
   /* ---------- o play (o <video> manda) ---------- */
 
   useEffect(() => {
-    const v = videoRef.current;
+    const v = vidRefs[activeSlot].current;
     if (!v || !baseHit || playing) return;
+    // Troca de papéis a caminho: espera o commit com o slot certo (o mesmo
+    // guard do efeito de play — cravar aqui mexeria no elemento errado).
+    if (slotPrep.current[activeSlot].clipId !== baseHit.clip.id) return;
     const want = baseHit.srcTime / 1000;
-    if (Math.abs(v.currentTime - want) > 0.02) v.currentTime = want;
-  }, [baseHit, playing]);
+    try {
+      if (Math.abs(v.currentTime - want) > 0.02) v.currentTime = want;
+    } catch {
+      /* src ainda carregando: o próximo render corrige */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseHit, playing, activeSlot]);
 
   /* ---------- o som do <video>: MUDO e VOLUME do clipe (v0.7.1) ---------- */
 
@@ -294,34 +435,55 @@ export default function Preview() {
   // esta a cada render. O `<video muted={...}>` declarativo também não serve —
   // o valor não chega ao elemento.)
   useEffect(() => {
-    const v = videoRef.current;
+    const v = vidRefs[activeSlot].current;
     if (!v) return;
     const c = baseHit?.clip;
     v.muted = !!c?.muted || !!track?.muted;
     v.volume = c ? audioGainAt(c, playhead) : 1;
-  }, [baseHit, playhead, track?.muted]);
+    // A reserva NUNCA tem voz — som dobrado na sobreposição seria pior que o
+    // silêncio do clipe de saída (o export faz o crossfade de áudio; a prévia
+    // entrega o som de quem entra, como o <video> único já fazia).
+    const vs = vidRefs[1 - activeSlot].current;
+    if (vs) vs.muted = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseHit, playhead, track?.muted, activeSlot]);
 
   useEffect(() => {
-    const v = videoRef.current;
+    const v = vidRefs[activeSlot].current;
     if (!v) return;
-    // `baseHit` é obrigatório aqui: no BURACO o `<video>` fica montado mas SEM
-    // src (ver o render). Chamar `play()` num elemento sem fonte REJEITA, e o
+    // `baseHit` é obrigatório aqui: no BURACO o `<video>` fica montado mas sem
+    // clipe embaixo. Chamar `play()` num elemento sem fonte REJEITA, e o
     // `.catch` abaixo pausaria o filme no meio do vazio — quem toca o buraco é o
     // ticker de wall-clock, não o `<video>`. Sem clipe embaixo: só pausa o vídeo.
     if (playing && !gone && rate > 0 && baseHit) {
-      // Ao ASSUMIR um clipe já tocando (o caso do buraco: o `<video>` ganha src
-      // só agora, zerado), crava o tempo-fonte ANTES de tocar. Sem isto, um clipe
-      // aparado (srcIn > 0) tocaria do 0 e o `onTimeUpdate` puxaria o playhead
-      // pra trás. Só aqui (roda na TROCA de clipe, não a cada quadro), com folga
-      // pra não brigar com o play.
+      // Se o slot ativo ainda não É o clipe atual, uma troca de papéis está a
+      // caminho (o efeito de revezamento acabou de pedi-la): cravar/tocar AQUI
+      // mandaria o tempo do clipe novo pro elemento velho. O commit seguinte —
+      // já com os papéis certos — re-roda este efeito e aí sim engata.
+      if (slotPrep.current[activeSlot].clipId !== baseHit.clip.id) return;
+      // Ao ASSUMIR um clipe (troca de papel na emenda, saída do buraco), crava o
+      // tempo-fonte ANTES de tocar. A reserva já vem posicionada no `srcIn`, mas
+      // a folga cobre o caminho frio e o clipe aparado. Só aqui (roda na TROCA
+      // de clipe, não a cada quadro), pra não brigar com o play.
       const want = baseHit.srcTime / 1000;
-      if (Math.abs(v.currentTime - want) > 0.15) v.currentTime = want;
+      try {
+        if (Math.abs(v.currentTime - want) > 0.15) v.currentTime = want;
+      } catch {
+        /* src ainda carregando: o play engata do começo e o crave volta */
+      }
       v.playbackRate = rate;
-      void v.play().catch(() => setPlaying(false));
+      void v.play().catch((e) => {
+        // Só o veto de AUTOPLAY derruba o filme (não há o que fazer sem gesto).
+        // AbortError — um load/pause atropelou este play() — é transitório: a
+        // remontagem seguinte toca; derrubar aqui matava o play numa troca de
+        // src legítima (medido dirigindo a GUI).
+        if ((e as DOMException)?.name === "NotAllowedError") setPlaying(false);
+      });
     } else {
       v.pause();
     }
-  }, [playing, gone, rate, baseHit?.clip.id, setPlaying]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, gone, rate, baseHit?.clip.id, activeSlot, setPlaying]);
 
   // Correr PELO VAZIO (pra frente): quando o playhead está num buraco não há
   // `<video>` pra tocar, então nada movia o tempo e o Espaço parecia morto. Um
@@ -376,26 +538,102 @@ export default function Preview() {
     return () => cancelAnimationFrame(raf);
   }, [playing, rate]);
 
-  const onTimeUpdate = () => {
-    const v = videoRef.current;
-    if (!v || !baseHit || !playing || rate < 0) return;
+  /** Aplica (ou limpa) o estilo da transição ao vivo no instante `t`. Fora do
+   *  React de propósito: rodar a 60 Hz por setState re-renderizaria a timeline
+   *  inteira a cada quadro. */
+  const styleXfade = (t: number) => {
+    const act = vidRefs[activeSlotRef.current].current;
+    if (!act) return;
+    const xf = playXfadeRef.current;
+    // A reserva precisa SER o clipe de saída (caminho frio não tem os quadros
+    // dele): sem ela embaixo, recortar/mover o ativo revelaria o fundo preto.
+    const stbIsPrev = xf && slotPrep.current[1 - activeSlotRef.current].clipId === xf.prev.id;
+    if (!xf || !stbIsPrev) {
+      clearEnterStyle(act);
+      return;
+    }
+    const p = Math.max(0, Math.min(1, (t - xf.startMs) / xf.ov));
+    if (p >= 1) clearEnterStyle(act);
+    else applyEnterStyle(act, xf.kind, xf.dir, p);
+  };
+
+  /* ---------- o relógio do play: rAF + timeupdate lendo o <video> ativo ----- */
+
+  /** O clipe sob o playhead, fora do ciclo do React (o passo do relógio lê
+   *  daqui pra não remontar nada a cada quadro). */
+  const baseHitRef = useRef(baseHit);
+  baseHitRef.current = baseHit;
+  const lastSeekRef = useRef(0);
+
+  /**
+   * UM passo do relógio de reprodução: lê o `currentTime` do vídeo ativo, move
+   * o playhead, detecta a emenda e anima a transição ao vivo. Tudo deriva do
+   * relógio do próprio `<video>` — nada acumula, então um passo perdido se
+   * corrige sozinho no seguinte.
+   *
+   * Dois motores chamam isto, pelo mesmo motivo que um relógio tem corda E
+   * bateria: o **rAF** dá a suavidade (o webview só dispara `timeupdate` a cada
+   * ~250 ms — playhead aos trancos e a emenda detectada com um quarto de
+   * segundo de atraso, o clipe de trás vazando conteúdo além do corte); o
+   * **timeupdate** continua batendo quando o rAF congela — janela minimizada
+   * não composita quadro e o rAF simplesmente PARA (medido dirigindo a GUI:
+   * o vídeo seguia tocando e o playhead ficava plantado até o `ended` socorrer).
+   */
+  const stepPlayback = (force = false) => {
+    const s = useEditor.getState();
+    const hit = baseHitRef.current;
+    const v = vidRefs[activeSlotRef.current].current;
+    if (!s.playing || s.rate <= 0 || !hit || !v) return;
+    // Antes dos metadados o currentTime mente (0): agir sobre ele puxaria o
+    // playhead pro começo do clipe. Espera o vídeo ter quadro.
+    if (v.readyState < 2 || v.paused) return;
+    const clip = hit.clip;
     const srcMs = v.currentTime * 1000;
-    const clipIn = baseHit.clip.srcIn ?? 0;
-    const clipOut = srcOut(baseHit.clip);
+    const clipOut = srcOut(clip);
     if (srcMs >= clipOut - 1) {
-      const next = clipEnd(baseHit.clip);
-      if (next >= total) {
-        setPlaying(false);
-        seek(total);
+      // Fim do clipe: avança pra emenda. O estado remonta com o próximo clipe
+      // (e o slot já trocado pela reserva) — sem piscar.
+      const dur = timelineDuration(s.history.present);
+      const next = clipEnd(clip);
+      if (next >= dur) {
+        s.setPlaying(false);
+        s.seek(dur);
       } else {
-        seek(next);
+        s.seek(next);
       }
       return;
     }
     // Com velocidade, o tempo de tela anda `1/speed` do tempo-fonte.
-    const sp = baseHit.clip.speed ?? 1;
-    seek(baseHit.clipStart + (srcMs - clipIn) / (sp > 0 ? sp : 1));
+    const t = hit.clipStart + (srcMs - (clip.srcIn ?? 0)) / clipSpeed(clip);
+    const now = performance.now();
+    // O seek re-renderiza timeline+prévia: ~30 Hz é liso pro olho sem virar
+    // um render por quadro. O `force` é o timeupdate (que já é escasso).
+    if (force || now - lastSeekRef.current > 33) {
+      lastSeekRef.current = now;
+      s.seek(t);
+    }
+    styleXfade(t);
   };
+  /** Ref estável pro JSX e pros listeners (o passo lê tudo de refs/getState). */
+  const stepRef = useRef(stepPlayback);
+  stepRef.current = stepPlayback;
+
+  useEffect(() => {
+    if (!playing || rate <= 0 || !baseHit) return;
+    let raf = 0;
+    const tick = () => {
+      stepRef.current();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      // Sem relógio não há transição em curso: limpa qualquer estilo que tenha
+      // ficado (pausa no meio de um dissolve deixaria o ativo translúcido).
+      for (const r of vidRefs) if (r.current) clearEnterStyle(r.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, rate, baseHit?.clip.id, activeSlot]);
 
   /** O rodapé conta o que a prévia É — e por que, quando é aproximada. */
   const quality = (() => {
@@ -472,22 +710,54 @@ export default function Preview() {
           <div className="stage-empty muted">{t("preview.gone")}</div>
         ) : total > 0 ? (
           <>
-            {/* O `<video>` fica SEMPRE montado enquanto há filme — inclusive no
-                buraco (só escondido). Se ele desmontasse no vazio e remontasse ao
-                cavar no clipe, o elemento novo teria que carregar do zero e o play
-                travava no limite do buraco (readyState 0). Mantendo o MESMO
-                elemento, cair do vazio pro clipe é só uma troca de `src` — o
-                caminho de play que já funciona. `src=undefined` no buraco pra o
-                navegador não tentar carregar a própria página como mídia. */}
-            <video
-              ref={videoRef}
-              className="stage-video"
-              src={src || undefined}
-              onTimeUpdate={onTimeUpdate}
-              onEnded={() => setPlaying(false)}
-              preload="auto"
-              style={{ display: showVideo ? "block" : "none" }}
-            />
+            {/* Os DOIS `<video>` ficam SEMPRE montados enquanto há filme (só
+                escondidos): o ativo mostra o clipe de agora; a reserva pré-carrega
+                o próximo (e vira o clipe de saída durante uma sobreposição — é aí
+                que ela aparece, embaixo do ativo). Desmontar/remontar obrigaria a
+                carregar do zero e traria de volta o piscar preto que este
+                revezamento existe pra matar. O src é imperativo (efeitos de
+                revezamento), não prop — mudá-lo é justamente o que se evita. */}
+            {([0, 1] as const).map((slot) => (
+              <video
+                key={slot}
+                ref={vidRefs[slot]}
+                className="stage-video"
+                preload="auto"
+                onTimeUpdate={() => {
+                  // O motor de reserva do relógio (ver `stepPlayback`): só o
+                  // ativo conta — o passo já lê o elemento certo por ref.
+                  if (slot === activeSlotRef.current) stepRef.current(true);
+                }}
+                onEnded={() => {
+                  // Só o ATIVO conta (a reserva pausada não deveria terminar).
+                  // O arquivo acabar É a emenda quando o clipe vai até o fim da
+                  // fonte: avança — parar aqui congelaria o filme no meio.
+                  if (slot !== activeSlotRef.current) return;
+                  const s = useEditor.getState();
+                  if (!s.playing) return;
+                  const hit = timeToClip(baseVideoTrack(s.history.present), s.playhead);
+                  const dur = timelineDuration(s.history.present);
+                  const next = hit ? clipEnd(hit.clip) : dur;
+                  if (next >= dur) {
+                    s.setPlaying(false);
+                    s.seek(dur);
+                  } else {
+                    s.seek(next);
+                  }
+                }}
+                style={{
+                  display:
+                    slot === activeSlot
+                      ? showVideo
+                        ? "block"
+                        : "none"
+                      : playing && rate > 0 && inXfade
+                        ? "block"
+                        : "none",
+                  zIndex: slot === activeSlot ? 2 : 1,
+                }}
+              />
+            ))}
             {/* O canvas: composição (parado) ou quadro exato. Fica por cima do
                 <video> pra a troca parar↔tocar não piscar preto. */}
             <canvas
@@ -728,6 +998,60 @@ function PipHandles({
 /** Grampeia em 0..1 (guarda de NaN). */
 function clamp01(n: number): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+}
+
+/**
+ * O estilo do clipe que ENTRA durante a transição ao vivo (play). É o gêmeo em
+ * CSS do que o `drawMedia` faz no canvas parado — as mesmas três geometrias,
+ * derivadas das mesmas contas puras (`wipeRect`/`slideOffset`), só que em
+ * porcentagem do elemento em vez de pixels do quadro:
+ * - dissolve: opacidade = progresso (o alpha do `crossfadeAlpha`);
+ * - wipe: `clip-path` revela a fatia já varrida (o retângulo do `wipeRect`);
+ * - slide: `translate` desloca o painel inteiro (o offset do `slideOffset`).
+ * Aproximado de propósito (o painel aqui é o elemento, não o quadro com barras
+ * exatas do export) — e o rodapé da prévia já diz "aproximada" no play.
+ */
+function applyEnterStyle(
+  el: HTMLVideoElement,
+  kind: TransitionKind,
+  dir: TransitionDir,
+  p: number,
+): void {
+  if (kind === "wipe") {
+    const r = ((1 - p) * 100).toFixed(2);
+    el.style.opacity = "";
+    el.style.transform = "";
+    el.style.clipPath =
+      dir === "lr"
+        ? `inset(0 ${r}% 0 0)`
+        : dir === "rl"
+          ? `inset(0 0 0 ${r}%)`
+          : dir === "tb"
+            ? `inset(0 0 ${r}% 0)`
+            : `inset(${r}% 0 0 0)`;
+  } else if (kind === "slide") {
+    el.style.opacity = "";
+    el.style.clipPath = "";
+    el.style.transform =
+      dir === "lr"
+        ? `translateX(${((p - 1) * 100).toFixed(2)}%)`
+        : dir === "rl"
+          ? `translateX(${((1 - p) * 100).toFixed(2)}%)`
+          : dir === "tb"
+            ? `translateY(${((p - 1) * 100).toFixed(2)}%)`
+            : `translateY(${((1 - p) * 100).toFixed(2)}%)`;
+  } else {
+    el.style.clipPath = "";
+    el.style.transform = "";
+    el.style.opacity = clamp01(p).toFixed(3);
+  }
+}
+
+/** Volta o elemento ao neutro (fim/cancelamento da transição ao vivo). */
+function clearEnterStyle(el: HTMLVideoElement): void {
+  el.style.opacity = "";
+  el.style.clipPath = "";
+  el.style.transform = "";
 }
 
 /**

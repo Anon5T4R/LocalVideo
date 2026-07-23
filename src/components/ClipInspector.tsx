@@ -7,6 +7,7 @@ import { formatDuration, formatSize, trackDisplayName } from "../lib/probe";
 import {
   clipDuration,
   clipSpeed,
+  DEFAULT_TRANSITION_MS,
   isTitle,
   locate,
   overlapWithNext,
@@ -441,28 +442,35 @@ const DIR_ARROW: Record<TransitionDir, string> = {
   bt: "↑",
 };
 function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateClip: UpdateClip }) {
-  // Só aparece quando a transição EXISTE: há um próximo clipe de mídia e a
-  // sobreposição é positiva (a geometria é a transição — sem sobreposição não
-  // há o que tipar). PiP entrando cai sempre no dissolve (ver compilador), aí
-  // o seletor esconde em vez de oferecer opção que mentiria.
+  const doSetTransitionRipple = useEditor((s) => s.doSetTransitionRipple);
   const next = loc.track.clips[loc.ci + 1];
   const ov = overlapWithNext(loc.track, loc.ci);
-  // Antes esta seção simplesmente SUMIA quando não havia sobreposição, e o
-  // usuário ficava sem saber pra onde foi a opção de transição (é a queixa
-  // "transição some" do mapa de UI). Agora a seção continua no lugar e EXPLICA
-  // o que fazer pra ela existir: a geometria é a transição — sem os clipes se
-  // sobreporem na régua, não há o que tipar.
-  if (!next || next.path === undefined || next.transform || ov <= 0) {
-    return <p className="muted small">{t("clip.transNone")}</p>;
+  // Sem um próximo clipe de MÍDIA não há emenda pra transicionar (título não
+  // tem crossfade; PiP entrando cai sempre no dissolve — ver compilador).
+  if (!next || next.path === undefined || next.transform) {
+    return <p className="muted small">{t("clip.transLast")}</p>;
+  }
+  // Há emenda mas ainda não há transição. Até a v0.12 este era o beco da UI: o
+  // texto mandava "arrastar a alça" — uma alça de 12px que ninguém descobria —
+  // e era o ÚNICO caminho. Agora a transição nasce de um clique, e o ripple
+  // garante que criar a sobreposição não abre buraco na fila (ver
+  // `setTransitionRipple`).
+  if (ov <= 0) {
+    return (
+      <div className="fields">
+        <p className="muted small">{t("clip.transNone")}</p>
+        <button className="block" onClick={() => doSetTransitionRipple(c.id, DEFAULT_TRANSITION_MS)}>
+          {t("clip.transCreate")}
+        </button>
+      </div>
+    );
   }
   const kind: TransitionKind = c.transitionKind ?? "dissolve";
   const dir = transitionDir(c);
   return (
     <div className="fields">
       <label className="field">
-        <span>
-          {t("clip.transKind")} <b className="tabnum">{formatDuration(ov)}</b>
-        </span>
+        <span>{t("clip.transKind")}</span>
         <select
           value={kind}
           onChange={(e) =>
@@ -478,6 +486,24 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
           <option value="wipe">{t("trans.wipe")}</option>
           <option value="slide">{t("trans.slide")}</option>
         </select>
+      </label>
+      {/* A duração agora se edita AQUI também (não só pela alça ⇄): campo em
+          segundos, escrito pelo ripple pra fila continuar colada. Digitar 0
+          remove a transição — o mesmo caminho do botão abaixo. */}
+      <label className="field">
+        <span>
+          {t("clip.transDur")} <b className="tabnum">{formatDuration(ov)}</b>
+        </span>
+        <input
+          type="number"
+          min={0}
+          step={0.1}
+          value={(ov / 1000).toFixed(1)}
+          onChange={(e) => {
+            const s = parseFloat(e.target.value);
+            doSetTransitionRipple(c.id, Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : 0);
+          }}
+        />
       </label>
       {/* A DIREÇÃO só existe pra wipe/slide — um dissolve não tem lado, e um
           seletor cinza ali só faria a pessoa procurar o que ele muda. */}
@@ -505,6 +531,9 @@ function Transition({ c, loc, doUpdateClip }: { c: Clip; loc: Located; doUpdateC
           </div>
         </div>
       ) : null}
+      <button className="mini" onClick={() => doSetTransitionRipple(c.id, 0)}>
+        {t("clip.transRemove")}
+      </button>
       <span className="muted small">{t("clip.transKindHint")}</span>
     </div>
   );

@@ -12,6 +12,7 @@ import {
   clipDuration,
   clipEnd,
   clipSpeed,
+  DEFAULT_TRANSITION_MS,
   isMedia,
   isTitle,
   locate,
@@ -120,6 +121,7 @@ export default function Timeline() {
   const doTrimEdge = useEditor((s) => s.doTrimEdge);
   const doMoveClip = useEditor((s) => s.doMoveClip);
   const doSetTransition = useEditor((s) => s.doSetTransition);
+  const doSetTransitionRipple = useEditor((s) => s.doSetTransitionRipple);
   const doSplit = useEditor((s) => s.doSplit);
   const doRemove = useEditor((s) => s.doRemove);
   const doAddTrack = useEditor((s) => s.doAddTrack);
@@ -724,8 +726,11 @@ export default function Timeline() {
               importSub: (ordinal) => {
                 if (menu.clip.path) void importEmbeddedSubtitles(menu.clip.path, ordinal);
               },
+              addTransition: () => doSetTransitionRipple(menu.clip.id, DEFAULT_TRANSITION_MS),
+              removeTransition: () => doSetTransitionRipple(menu.clip.id, 0),
             },
             rippleMode,
+            transitionCtx(timeline, menu.clip.id),
           )}
         />
       ) : null}
@@ -811,6 +816,25 @@ function TrackHead(p: {
   );
 }
 
+/** A emenda deste clipe com o próximo, do jeito que o menu precisa saber:
+ *  dá pra criar transição ali? já existe uma? Puro — a regra é a MESMA do
+ *  inspetor (próximo clipe de mídia, sem PiP, em trilha de vídeo). */
+function transitionCtx(tl: Timeline, id: string): { canTransition: boolean; hasTransition: boolean } {
+  const loc = locate(tl, id);
+  const next = loc ? loc.track.clips[loc.ci + 1] : undefined;
+  const can =
+    !!loc &&
+    loc.track.kind === "video" &&
+    isMedia(loc.clip) &&
+    !!next &&
+    next.path !== undefined &&
+    !next.transform;
+  return {
+    canTransition: can,
+    hasTransition: can && overlapWithNext(loc!.track, loc!.ci) > 0,
+  };
+}
+
 /** As ações do menu de contexto de um clipe. Função pura (sem hook, sem store):
  *  recebe o clipe e a mídia, decide o que faz sentido, e devolve os itens. Fora
  *  do componente pra ser testável e pra não remontar a cada render. */
@@ -825,11 +849,17 @@ function clipMenuItems(
     addTitle: () => void;
     remove: () => void;
     importSub: (ordinal: number) => void;
+    addTransition: () => void;
+    removeTransition: () => void;
   },
   /** O modo Ripple está ligado? Só muda o RÓTULO do remover — a ação já
    *  consulta o modo no store. Um "Remover" que fecha o buraco sem avisar é
    *  surpresa; dizer "e fechar o buraco" é o mesmo clique, honesto. */
   rippleMode = false,
+  trans: { canTransition: boolean; hasTransition: boolean } = {
+    canTransition: false,
+    hasTransition: false,
+  },
 ): MenuItem[] {
   const info = clip.path ? media[clip.path] : undefined;
   const nAudio = info?.audioTracks.length ?? 0;
@@ -858,6 +888,15 @@ function clipMenuItems(
     },
     { label: detachLabel, onClick: act.detach, disabled: !canDetach },
     ...subs,
+    // A transição no lugar onde a mão já está: o botão direito na emenda. Com
+    // sobreposição vira "remover"; sem próximo clipe fica cinza — desabilitado
+    // ENSINA que a ação existe (mesmo critério do separar áudio acima).
+    {
+      label: trans.hasTransition ? t("tl.ctxTransRemove") : t("tl.ctxTransAdd"),
+      onClick: trans.hasTransition ? act.removeTransition : act.addTransition,
+      disabled: !trans.canTransition,
+      divider: true,
+    },
     { label: t("title.add"), hint: "T", onClick: act.addTitle, divider: true },
     {
       label: rippleMode ? t("tl.removeRipple") : t("tl.remove"),

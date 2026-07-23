@@ -470,7 +470,14 @@ kbd {
   min-height: 90px;
   aspect-ratio: auto;
 }
+/* Os DOIS <video> do revezamento ocupam o palco inteiro, um sobre o outro (o
+ * z-index vem inline: ativo=2, reserva=1). Absolutos porque durante a transição
+ * ao vivo os dois aparecem ao mesmo tempo — em fluxo, o segundo empurraria o
+ * layout. Fundo preto: no slide/wipe o painel que entra é opaco com as barras,
+ * como no export. */
 .stage-video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
@@ -487,6 +494,10 @@ kbd {
   height: 100%;
   object-fit: contain;
   background: #000;
+  /* Acima dos <video> (z 1/2 inline) e abaixo das alças de PiP (z 3). Vem
+   * depois deles no DOM, então o empate em 2 já o poria por cima — o valor
+   * explícito é pra regra não depender da ordem dos irmãos. */
+  z-index: 2;
 }
 .stage-empty {
   position: absolute;

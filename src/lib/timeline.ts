@@ -126,6 +126,11 @@ export type TransitionDir = "lr" | "rl" | "tb" | "bt";
 /** Todas as direções, na ordem em que o seletor as oferece. */
 export const TRANSITION_DIRS: TransitionDir[] = ["lr", "rl", "tb", "bt"];
 
+/** Duração da transição "de um clique" (botão do inspetor, menu de contexto).
+ *  Meio segundo é o padrão dos NLEs — longo o bastante pro olho ver, curto o
+ *  bastante pra não comer o conteúdo dos dois lados. */
+export const DEFAULT_TRANSITION_MS = 500;
+
 /** A direção de um clipe, com o padrão histórico. Num lugar só porque o
  *  compilador, a prévia e o inspetor têm que concordar no que é "ausente". */
 export function transitionDir(c: Pick<Clip, "transitionDir">): TransitionDir {
@@ -1053,6 +1058,43 @@ export function setTransition(tl: Timeline, id: string, transitionMs: number): T
   if (newStart === b.startMs) return tl;
   const clips = track.clips.slice();
   clips[ci + 1] = { ...b, startMs: Math.max(0, newStart) };
+  return withTrack(tl, ti, clips);
+}
+
+/**
+ * Cria/ajusta/remove a transição com o próximo clipe SEM abrir buraco: o
+ * seguinte anda pra dentro (ou pra fora) deste, e **todo mundo que vinha
+ * depois dele na trilha anda junto**, mantendo a fila colada.
+ *
+ * É a irmã "de um clique" do `setTransition` (a alça da régua): a alça só move
+ * o clipe B — semântica de manipulação direta, o dedo move o que segura — mas
+ * numa ação de menu ("adicionar transição") mover só o B deixaria um vazio do
+ * tamanho da sobreposição entre B e C, um efeito colateral que ninguém pediu e
+ * que só aparece depois, como um piscar preto no meio do filme. Aqui a fila
+ * inteira acompanha; remover (`transitionMs = 0`) desfaz pelo mesmo caminho.
+ *
+ * Só faz sentido entre dois clipes de MÍDIA (título não tem crossfade) e o
+ * grampo é o mesmo do `setTransition`: 0..min(durações). Não-evento devolve a
+ * MESMA referência (contrato do undo).
+ */
+export function setTransitionRipple(tl: Timeline, id: string, transitionMs: number): Timeline {
+  const loc = locate(tl, id);
+  if (!loc) return tl;
+  const { track, ci, ti } = loc;
+  const a = track.clips[ci];
+  const b = track.clips[ci + 1];
+  if (!b || !isMedia(a) || !isMedia(b)) return tl;
+  const want = Math.max(0, Math.min(Math.round(transitionMs), clipDuration(a), clipDuration(b)));
+  const newStart = Math.max(0, clipEnd(a) - want);
+  const delta = newStart - b.startMs;
+  if (delta === 0) return tl;
+  const bStart = b.startMs;
+  const clips = track.clips.map((c, i) => {
+    if (i <= ci) return c;
+    // B e todo clipe que começa junto com ele ou depois andam o mesmo tanto —
+    // inclusive títulos por cima da emenda, que ficariam órfãos do corte.
+    return c.startMs >= bStart ? { ...c, startMs: Math.max(0, c.startMs + delta) } : c;
+  });
   return withTrack(tl, ti, clips);
 }
 

@@ -246,7 +246,7 @@ const pt = {
   "clip.transition": "Arraste pra criar a transição (crossfade) com o próximo",
   "clip.transKind": "Transição com o próximo",
   "clip.transKindHint":
-    "Vale na sobreposição com o próximo clipe. A duração é a alça ⇄ na timeline.",
+    "Vale na sobreposição com o próximo clipe. A duração também é a alça ⇄ na timeline.",
   "trans.dissolve": "Dissolver (crossfade)",
   "trans.wipe": "Cortina (wipe)",
   "trans.slide": "Deslizar (slide)",
@@ -275,7 +275,16 @@ const pt = {
   "clip.audioTrackHint":
     "A prévia toca a faixa padrão do arquivo — o motor de mídia do sistema não deixa escolher a faixa. O EXPORT separa as faixas corretamente.",
   "clip.transNone":
-    "Não há transição nesta emenda. Arraste a alça de transição na borda direita do clipe (ou sobreponha-o ao próximo) pra criar uma.",
+    "Sem transição nesta emenda ainda. Crie com o botão abaixo — ou arraste a alça ⇄ na borda direita do clipe.",
+  "clip.transCreate": "Criar transição (0,5 s)",
+  "clip.transDur": "Duração (s)",
+  "clip.transRemove": "Remover transição",
+  "clip.transLast":
+    "Sem emenda com um próximo clipe de vídeo aqui — a transição vive entre dois clipes de mídia na mesma trilha.",
+  "tl.ctxTransAdd": "Adicionar transição (0,5 s)",
+  "tl.ctxTransRemove": "Remover transição",
+  "pool.ctxInsertEnd": "Inserir no fim da timeline",
+  "pool.ctxInsertPlayhead": "Inserir no playhead",
   "preview.trackLimit": "prévia mistura as faixas",
   "preview.trackLimitHint":
     "Este projeto usa mais de uma faixa de áudio do mesmo arquivo. Na prévia todas tocam a faixa padrão (o motor de mídia do sistema não deixa escolher a faixa); no arquivo exportado cada clipe leva a faixa certa.",
@@ -321,7 +330,7 @@ const pt = {
     "Prévia aproximada: o ajuste de cor é uma aproximação; o export é fiel.",
   "preview.wysiwyg": "Prévia da composição (o que você vê é o que exporta).",
   "preview.playApprox":
-    "Durante a reprodução a prévia mostra a trilha base; pause pra ver a composição.",
+    "Durante a reprodução a prévia mostra a trilha base (transições aproximadas); pause pra ver a composição.",
 
   "exp.presetLabel": "Formato de saída",
   "exp.preset.source": "Original (sem mexer no formato)",
@@ -619,7 +628,7 @@ const en: Record<MessageKey, string> = {
   "clip.transition": "Drag to create the transition (crossfade) with the next clip",
   "clip.transKind": "Transition to the next clip",
   "clip.transKindHint":
-    "Applies to the overlap with the next clip. The duration is the ⇄ handle on the timeline.",
+    "Applies to the overlap with the next clip. The duration is also the ⇄ handle on the timeline.",
   "trans.dissolve": "Dissolve (crossfade)",
   "trans.wipe": "Wipe",
   "trans.slide": "Slide",
@@ -645,7 +654,16 @@ const en: Record<MessageKey, string> = {
   "clip.audioTrackHint":
     "The preview plays the file's default track — the system media engine offers no way to pick a track. The EXPORT separates the tracks correctly.",
   "clip.transNone":
-    "There is no transition at this cut. Drag the transition handle on the clip's right edge (or overlap it with the next clip) to create one.",
+    "No transition at this cut yet. Create one with the button below — or drag the ⇄ handle on the clip's right edge.",
+  "clip.transCreate": "Create transition (0.5 s)",
+  "clip.transDur": "Duration (s)",
+  "clip.transRemove": "Remove transition",
+  "clip.transLast":
+    "No cut with a next video clip here — transitions live between two media clips on the same track.",
+  "tl.ctxTransAdd": "Add transition (0.5 s)",
+  "tl.ctxTransRemove": "Remove transition",
+  "pool.ctxInsertEnd": "Insert at end of timeline",
+  "pool.ctxInsertPlayhead": "Insert at playhead",
   "preview.trackLimit": "preview mixes the tracks",
   "preview.trackLimitHint":
     "This project uses more than one audio track from the same file. In the preview they all play the default track (the system media engine offers no way to pick one); in the exported file each clip carries the right track.",
@@ -690,7 +708,7 @@ const en: Record<MessageKey, string> = {
   "preview.approx": "Approximate preview: the color tweak is an approximation; the export is faithful.",
   "preview.wysiwyg": "Composition preview (what you see is what you export).",
   "preview.playApprox":
-    "During playback the preview shows the base track; pause to see the composition.",
+    "During playback the preview shows the base track (transitions approximated); pause to see the composition.",
 
   "exp.presetLabel": "Output format",
   "exp.preset.source": "Original (leave the format alone)",
@@ -990,7 +1008,7 @@ const es: Record<MessageKey, string> = {
   "clip.transition": "Arrastra para crear la transición (crossfade) con el siguiente clip",
   "clip.transKind": "Transición con el siguiente",
   "clip.transKindHint":
-    "Se aplica en la superposición con el siguiente clip. La duración es el tirador ⇄ en la línea de tiempo.",
+    "Se aplica en la superposición con el siguiente clip. La duración también es el asa ⇄ en la línea de tiempo.",
   "trans.dissolve": "Disolver (crossfade)",
   "trans.wipe": "Cortina (wipe)",
   "trans.slide": "Deslizar (slide)",
@@ -1016,7 +1034,16 @@ const es: Record<MessageKey, string> = {
   "clip.audioTrackHint":
     "La vista previa reproduce la pista predeterminada del archivo — el motor multimedia del sistema no permite elegir la pista. La EXPORTACIÓN separa las pistas correctamente.",
   "clip.transNone":
-    "No hay transición en esta unión. Arrastra el tirador de transición del borde derecho del clip (o superponlo con el siguiente) para crear una.",
+    "Aún no hay transición en esta unión. Créala con el botón de abajo — o arrastra el asa ⇄ del borde derecho del clip.",
+  "clip.transCreate": "Crear transición (0,5 s)",
+  "clip.transDur": "Duración (s)",
+  "clip.transRemove": "Quitar transición",
+  "clip.transLast":
+    "No hay unión con un clip de vídeo siguiente aquí — la transición vive entre dos clips de medios en la misma pista.",
+  "tl.ctxTransAdd": "Añadir transición (0,5 s)",
+  "tl.ctxTransRemove": "Quitar transición",
+  "pool.ctxInsertEnd": "Insertar al final de la línea de tiempo",
+  "pool.ctxInsertPlayhead": "Insertar en el cursor",
   "preview.trackLimit": "la vista previa mezcla las pistas",
   "preview.trackLimitHint":
     "Este proyecto usa más de una pista de audio del mismo archivo. En la vista previa todas reproducen la pista predeterminada (el motor multimedia del sistema no permite elegirla); en el archivo exportado cada clip lleva la pista correcta.",
@@ -1061,7 +1088,7 @@ const es: Record<MessageKey, string> = {
   "preview.approx": "Vista previa aproximada: el ajuste de color es una aproximación; la exportación es fiel.",
   "preview.wysiwyg": "Vista previa de la composición (lo que ves es lo que exportas).",
   "preview.playApprox":
-    "Durante la reproducción la vista previa muestra la pista base; pausa para ver la composición.",
+    "Durante la reproducción la vista previa muestra la pista base (transiciones aproximadas); pausa para ver la composición.",
 
   "exp.presetLabel": "Formato de salida",
   "exp.preset.source": "Original (sin tocar el formato)",

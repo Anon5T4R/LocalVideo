@@ -39,6 +39,7 @@ import {
   setClipEdge,
   setClipSpeed,
   setTransition,
+  setTransitionRipple,
   splitAt,
   timelineDuration,
   undo,
@@ -162,6 +163,9 @@ interface EditorState {
   doMoveClip: (id: string, toTrackId: string, startMs: number) => void;
   /** Ajusta a transição (crossfade) entre este clipe e o seguinte. */
   doSetTransition: (id: string, transitionMs: number) => void;
+  /** A transição "de um clique" (menu/inspetor): cria/ajusta/remove a
+   *  sobreposição puxando o seguinte E a fila atrás — não abre buraco. */
+  doSetTransitionRipple: (id: string, transitionMs: number) => void;
   /** Muda propriedades de um clipe (volume, fade, título, opacidade, filtros).
    *  `null` numa chave REMOVE aquela propriedade (zerar um filtro). */
   doUpdateClip: (id: string, patch: ClipPatch) => void;
@@ -441,6 +445,16 @@ export const useEditor = create<EditorState>((set, get) => ({
       dirty: true,
       editPushed: true,
     });
+  },
+
+  doSetTransitionRipple: (id, transitionMs) => {
+    const { history } = get();
+    const next = setTransitionRipple(history.present, id, transitionMs);
+    if (next === history.present) return;
+    // Ação discreta (clique de menu/campo), não arrasto: cada mexida é um passo
+    // de undo próprio — igual ao doSetSpeed.
+    set({ history: pushHistory(history, next), dirty: true });
+    clampPlayhead(set, get);
   },
 
   doUpdateClip: (id, patch) => {

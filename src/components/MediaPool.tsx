@@ -1,10 +1,12 @@
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 
+import ContextMenu, { type MenuItem } from "./ContextMenu";
 import Icon from "./Icon";
 import { t } from "../lib/i18n";
 import { formatDuration } from "../lib/probe";
-import { mediaUsageCount } from "../lib/timeline";
-import { baseName, useEditor } from "../state/editor";
+import { baseVideoTrack, mediaUsageCount, trackEnd } from "../lib/timeline";
+import { baseName, dirName, useEditor } from "../state/editor";
 import { resolveLaneDrop, type LaneDrop } from "../state/lanedrop";
 import { useUi } from "../state/ui";
 
@@ -61,6 +63,10 @@ export default function MediaPool({ osDropping }: { osDropping: boolean }) {
   /** O arquivo que o usuário mandou remover e que AINDA tem clipe na timeline:
    *  a confirmação. `null` = não há nada pra confirmar. */
   const [kill, setKill] = useState<{ path: string; n: number } | null>(null);
+  /** Menu de contexto de um item do pool (`null` = fechado). O painel era o
+   *  único canto do app onde o botão direito não fazia nada — e "arrastar" era
+   *  o ÚNICO jeito de usar um arquivo, o que ninguém descobre sem a dica. */
+  const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   /** Onde o ponteiro está e onde o clipe cairia — só existe durante o arrasto. */
   const [ghost, setGhost] = useState<{ x: number; y: number; drop: LaneDrop | null } | null>(null);
 
@@ -154,6 +160,44 @@ export default function MediaPool({ osDropping }: { osDropping: boolean }) {
     setKill({ path, n });
   };
 
+  /** As ações do botão direito num item. Inserir usa a MESMA porta do arrasto
+   *  (`doInsertMedia`) — só muda quem decide a posição: o fim da trilha base ou
+   *  o playhead, em vez do dedo. Arquivo sumido não insere (não há duração). */
+  const poolMenuItems = (path: string): MenuItem[] => {
+    const gone = missing.includes(path);
+    const insertAt = (startMs: number) => {
+      const base = baseVideoTrack(useEditor.getState().history.present);
+      if (base) doInsertMedia(path, base.id, Math.max(0, Math.round(startMs)));
+    };
+    return [
+      {
+        label: t("pool.ctxInsertEnd"),
+        onClick: () => {
+          const base = baseVideoTrack(useEditor.getState().history.present);
+          if (base) insertAt(trackEnd(base));
+        },
+        disabled: gone,
+      },
+      {
+        label: t("pool.ctxInsertPlayhead"),
+        onClick: () => insertAt(useEditor.getState().playhead),
+        disabled: gone,
+      },
+      {
+        // Mesmo padrão do ExportModal: reveal nativo (arquivo selecionado no
+        // explorador) e, se ele faltar, ao menos abrir a pasta.
+        label: t("exp.revealFile"),
+        onClick: () => {
+          void revealItemInDir(path).catch(() => {
+            void openPath(dirName(path)).catch(() => {});
+          });
+        },
+        divider: true,
+      },
+      { label: t("pool.remove"), onClick: () => askRemove(path), danger: true, divider: true },
+    ];
+  };
+
   /* ---------------- render ---------------- */
 
   // Recolhido: sobra uma faixa fina com o botão de reabrir. Some por completo
@@ -213,6 +257,10 @@ export default function MediaPool({ osDropping }: { osDropping: boolean }) {
                 key={path}
                 className={`pool-item ${gone ? "gone" : ""} ${poolDragPath === path ? "dragging" : ""}`}
                 onPointerDown={(e) => beginDrag(e, path)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu({ x: e.clientX, y: e.clientY, path });
+                }}
                 title={`${path}\n${t("pool.dragHint")}`}
               >
                 <div className="pool-thumb" aria-hidden>
@@ -270,6 +318,15 @@ export default function MediaPool({ osDropping }: { osDropping: boolean }) {
             />
           ) : null}
         </>
+      ) : null}
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={poolMenuItems(menu.path)}
+          onClose={() => setMenu(null)}
+        />
       ) : null}
 
       {kill ? (
