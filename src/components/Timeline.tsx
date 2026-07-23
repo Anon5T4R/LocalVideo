@@ -343,6 +343,9 @@ export default function Timeline() {
   }, [scrubbing, pxPerSec]);
 
   const beginScrub = (e: React.PointerEvent) => {
+    // Só o botão principal: com o direito nasceria um scrub grudado no menu de
+    // contexto, e com o do meio brigaria com o autoscroll do sistema.
+    if (e.button !== 0) return;
     // Parar antes de varrer: o ticker do play e o dedo brigariam pelo playhead e
     // o quadro ficaria pulando entre os dois donos.
     useEditor.getState().setPlaying(false);
@@ -595,8 +598,12 @@ export default function Timeline() {
                   if (el) laneRefs.current.set(track.id, el);
                   else laneRefs.current.delete(track.id);
                 }}
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) seekFromEvent(e);
+                onPointerDown={(e) => {
+                  // O VAZIO da trilha varre como a régua (v0.13.1): clicar busca
+                  // (o pointerdown já busca) e arrastar segue o dedo. Só no
+                  // fundo da lane — em cima de clipe o arrasto é MOVER o clipe,
+                  // e o `stopPropagation` do ClipView já segura o gesto lá.
+                  if (e.target === e.currentTarget) beginScrub(e);
                 }}
               >
                 {track.clips.map((c, i) => (
