@@ -1225,7 +1225,14 @@ function targetDims(
   for (const tk of tl.tracks) {
     if (tk.kind !== "video") continue;
     for (const c of tk.clips) {
-      if (c.path && media[c.path]) return { w: media[c.path].width, h: media[c.path].height };
+      const s = c.path ? media[c.path] : undefined;
+      // Fonte de tamanho ZERO não define resolução nenhuma — ela CONTINUA a
+      // busca. Desde a v0.15 dá pra importar arquivo só-áudio (largura e altura
+      // 0, de propósito: o probe não inventa vídeo que não existe), e soltar um
+      // mp3 numa lane de VÍDEO é gesto possível. Com o `return` cru, esse clipe
+      // fixava o canvas em 0×0 e apagava a prévia do projeto INTEIRO, inclusive
+      // dos vídeos de verdade que viessem depois dele na trilha.
+      if (s && s.width > 0 && s.height > 0) return { w: s.width, h: s.height };
     }
   }
   return { w: 1920, h: 1080 };
