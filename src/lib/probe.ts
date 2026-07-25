@@ -130,6 +130,29 @@ export function isImagePath(path: string): boolean {
 }
 
 /**
+ * Arquivos só-áudio aceitos como fonte.
+ *
+ * Não existiam até aqui, e a falta era invisível do jeito pior: o diálogo de
+ * importar não os LISTAVA e o drop nativo os filtrava fora sem dizer nada, então
+ * arrastar um mp3 pra dentro do app simplesmente não fazia nada — nem erro, nem
+ * clipe. Com isso, "montar um vídeo a partir de um áudio" (foto + música, um
+ * podcast com capa) era impossível, embora o compilador de export já soubesse
+ * mixar trilha de áudio desde a v0.7.
+ *
+ * `.mp4` e `.mkv` NÃO entram aqui mesmo quando o arquivo só tem som: quem decide
+ * a trilha de destino é a extensão, e um container de vídeo pode ganhar imagem
+ * depois. Um arquivo assim entra como vídeo e o usuário separa o áudio — o
+ * caminho que já existe.
+ */
+export const AUDIO_EXT = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "oga", "opus", "wma", "aiff"];
+
+/** É um arquivo só-áudio? (pela extensão, mesma regra do `isImagePath`.) */
+export function isAudioPath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return AUDIO_EXT.includes(ext);
+}
+
+/**
  * Fps confiável do arquivo. Prefere `avg_frame_rate` (média REAL dos quadros);
  * o `r_frame_rate` é a menor taxa que expressa todos os timestamps e num vídeo
  * de taxa variável estoura pra coisas como 1000 fps — número certo pro

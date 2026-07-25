@@ -485,16 +485,30 @@ function withTrack(tl: Timeline, ti: number, clips: Clip[]): Timeline {
 
 /**
  * Acrescenta um clipe de mídia no FIM da trilha base (import). Entra logo depois
- * do último clipe da trilha — sem buraco, como a v0.1 fazia. Se não houver
- * trilha de vídeo, é não-evento (não deve acontecer).
+ * do último clipe da trilha — sem buraco, como a v0.1 fazia.
+ *
+ * `audio: true` manda o clipe pra trilha de ÁUDIO em vez da base de vídeo. Um
+ * mp3/wav não tem imagem nenhuma: enfileirado na base ele viraria um trecho
+ * PRETO com som, empurrando o vídeo de verdade pra frente — e o usuário que só
+ * queria pôr música por baixo veria o filme crescer. Trilha de áudio não existir
+ * é possível (dá pra remover trilha desde a v0.9), então ela é CRIADA aqui em
+ * vez de o import virar não-evento silencioso.
  */
 export function appendMedia(
   tl: Timeline,
-  media: { path: string; srcIn: number; srcOut: number; image?: boolean },
+  media: { path: string; srcIn: number; srcOut: number; image?: boolean; audio?: boolean },
 ): Timeline {
-  const ti = tl.tracks.findIndex((t) => t.kind === "video");
-  if (ti < 0) return tl;
-  const track = tl.tracks[ti];
+  const kind: TrackKind = media.audio ? "audio" : "video";
+  let out = tl;
+  let ti = out.tracks.findIndex((t) => t.kind === kind);
+  if (ti < 0) {
+    // Sem trilha de vídeo continua sendo não-evento (a base é a espinha do
+    // modelo e o app sempre cria uma); sem trilha de ÁUDIO, cria.
+    if (kind === "video") return tl;
+    out = addTrack(out, "audio");
+    ti = out.tracks.length - 1;
+  }
+  const track = out.tracks[ti];
   const start = trackEnd(track);
   const clip: Clip = {
     id: newId(),
@@ -504,7 +518,7 @@ export function appendMedia(
     srcIn: media.srcIn,
     ...(media.image ? { image: true } : {}),
   };
-  return withTrack(tl, ti, [...track.clips, clip]);
+  return withTrack(out, ti, [...track.clips, clip]);
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   clipDuration,
   clipEnd,
   clipSpeed,
+  isImageClip,
   transitionDir,
   type Clip,
   type ColorAdjust,
@@ -229,6 +230,48 @@ export function layersAt(tl: Timeline, t: number): Layer[] {
     });
   }
   return out;
+}
+
+/**
+ * Dá pra DECODIFICAR tudo o que estas camadas pedem?
+ *
+ * Mora aqui, puro e testado, porque a versão que morava solta no `Preview.tsx`
+ * escondeu o bug da imagem preta por uma versão inteira. Ela era
+ * `hasWebCodecs() && layers.every(l => canDecodeExactly(l.path))` — e
+ * `canDecodeExactly` só diz sim pros containers que o mp4box abre. Um `.png`
+ * reprovava; reprovando, a composição não rodava; e como imagem também não vai
+ * pro `<video>` (que não decodifica png), **não sobrava caminho nenhum e a
+ * prévia ficava preta**. Uma timeline feita de uma foto — exatamente "montar um
+ * vídeo a partir de uma imagem" — não mostrava nada.
+ *
+ * A regra certa: **imagem não passa pelo portão do WebCodecs**, porque ela é
+ * decodificada por `createImageBitmap`. `canDecode` entra por parâmetro pra este
+ * módulo seguir sem saber o que é mp4box.
+ */
+export function canDecodeLayers(
+  layers: Layer[],
+  missing: string[],
+  canDecode: (path: string) => boolean,
+): boolean {
+  return layers.every((l) => {
+    if (l.kind !== "media") return true;
+    const path = l.clip.path!;
+    if (missing.includes(path)) return false;
+    return isImageClip(l.clip) || canDecode(path);
+  });
+}
+
+/**
+ * Alguma camada exige decodificar VÍDEO de verdade? (imagem parada e título não)
+ *
+ * É o que autoriza compor DURANTE o play. A regra geral — tocando, quem manda é
+ * o `<video>` — existe por custo: compor N filmes a 30 fps é decodificar vários
+ * arquivos ao mesmo tempo. Uma foto e um texto não têm esse custo. Sem esta
+ * exceção, apertar play numa timeline de foto + música devolvia PRETO: a imagem
+ * não vai pro `<video>` e o canvas se escondia por ser play.
+ */
+export function needsVideoDecode(layers: Layer[]): boolean {
+  return layers.some((l) => l.kind === "media" && !isImageClip(l.clip));
 }
 
 /**

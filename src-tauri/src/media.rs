@@ -125,11 +125,22 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
     let streams = v.get("streams").and_then(|s| s.as_array()).unwrap_or(&empty);
     let format = v.get("format").cloned().unwrap_or(serde_json::Value::Null);
 
-    let video = streams
-        .iter()
-        .find(|s| get_str(s, "codec_type") == "video")
-        .ok_or_else(|| "no-video".to_string())?;
     let audio = streams.iter().find(|s| get_str(s, "codec_type") == "audio");
+    // Vídeo é OPCIONAL desde a v0.15 — antes daqui saía `Err("no-video")` e um
+    // mp3/wav era rejeitado na porta, com a UI dizendo "não consegui abrir".
+    // Isso tornava impossível montar um vídeo a partir de um áudio (foto +
+    // música, podcast com capa), embora o compilador de export já soubesse
+    // mixar trilha de áudio. Arquivo sem vídeo NEM áudio segue sendo erro: aí
+    // não há mídia nenhuma pra colocar na timeline.
+    let video = streams.iter().find(|s| get_str(s, "codec_type") == "video");
+    if video.is_none() && audio.is_none() {
+        return Err("no-video".into());
+    }
+    // Campos de vídeo num arquivo só-áudio: 0/"" (o front já trata `fps` 0 com o
+    // `FALLBACK_FPS`, e largura/altura zeradas não entram no `targetFormat`,
+    // que só olha clipe de trilha de VÍDEO).
+    let vget = |k: &str| video.and_then(|v| v.get(k)).and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let vstr = |k: &str| video.map(|v| get_str(v, k)).unwrap_or_default();
 
     // TODAS as faixas de áudio, com o índice REAL do stream (não a posição na
     // lista de áudios): num arquivo `vídeo, áudio, áudio` o segundo áudio é o
@@ -170,19 +181,21 @@ pub fn info_from_probe_json(path: &str, json: &str) -> Result<MediaInfo, String>
         })
         .collect();
 
-    // Duração: o container manda; se faltar (alguns MKV), cai pro stream de vídeo.
+    // Duração: o container manda; se faltar (alguns MKV), cai pro stream de
+    // vídeo — e, num arquivo só-áudio, pro stream de áudio.
     let dur_s = get_f64(&format, "duration")
-        .or_else(|| get_f64(video, "duration"))
+        .or_else(|| video.and_then(|v| get_f64(v, "duration")))
+        .or_else(|| audio.and_then(|a| get_f64(a, "duration")))
         .unwrap_or(0.0);
 
     Ok(MediaInfo {
         path: path.to_string(),
         duration_ms: (dur_s.max(0.0) * 1000.0).round() as u64,
-        width: video.get("width").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        height: video.get("height").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
-        frame_rate: get_str(video, "r_frame_rate"),
-        avg_frame_rate: get_str(video, "avg_frame_rate"),
-        video_codec: get_str(video, "codec_name"),
+        width: vget("width"),
+        height: vget("height"),
+        frame_rate: vstr("r_frame_rate"),
+        avg_frame_rate: vstr("avg_frame_rate"),
+        video_codec: vstr("codec_name"),
         audio_codec: audio.map(|a| get_str(a, "codec_name")),
         has_audio: audio.is_some(),
         audio_tracks,
@@ -715,12 +728,43 @@ mod tests {
         assert_eq!(info_from_probe_json("a.mkv", json).unwrap().duration_ms, 7500);
     }
 
+    /// Arquivo SÓ-ÁUDIO abre (v0.15) — antes o probe devolvia `no-video` e o
+    /// mp3 era rejeitado na porta, o que tornava impossível montar um vídeo a
+    /// partir de um áudio. O que ele NÃO pode fazer é inventar vídeo: largura,
+    /// altura, fps e codec de vídeo saem zerados/vazios, e é disso que o front
+    /// depende pra não deixar um mp3 definir a resolução do filme.
+    #[test]
+    fn arquivo_so_de_audio_abre_sem_inventar_video() {
+        let json = r#"{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2,
+          "duration":"183.5"}],"format":{"duration":"183.5","size":"2937600"}}"#;
+        let i = info_from_probe_json("a.mp3", json).unwrap();
+        assert_eq!(i.duration_ms, 183_500);
+        assert_eq!((i.width, i.height), (0, 0));
+        assert_eq!(i.frame_rate, "");
+        assert_eq!(i.avg_frame_rate, "");
+        assert_eq!(i.video_codec, "");
+        assert!(i.has_audio);
+        assert_eq!(i.audio_codec.as_deref(), Some("mp3"));
+        assert_eq!(i.audio_tracks.len(), 1);
+    }
+
+    /// Só-áudio SEM `format.duration` (comum em mp3 com VBR mal tageado): a
+    /// duração tem que cair pro stream de ÁUDIO. Antes a cascata parava no
+    /// stream de vídeo, que aqui não existe — e o clipe nasceria com 0 ms, isto
+    /// é, invisível na timeline e sem jeito de aparar.
+    #[test]
+    fn duracao_de_so_audio_cai_pro_stream_de_audio() {
+        let json = r#"{"streams":[{"codec_type":"audio","codec_name":"flac","duration":"12.25"}],
+          "format":{}}"#;
+        assert_eq!(info_from_probe_json("a.flac", json).unwrap().duration_ms, 12_250);
+    }
+
     #[test]
     fn erros_sao_codigo_pra_ui_traduzir() {
-        // Um MP3 não é material de timeline de vídeo — e o erro sai como CÓDIGO,
-        // nunca como frase em pt (que vazaria na tela de quem usa em espanhol).
-        let json = r#"{"streams":[{"codec_type":"audio","codec_name":"mp3"}],"format":{}}"#;
-        assert_eq!(info_from_probe_json("a.mp3", json).unwrap_err(), "no-video");
+        // Arquivo sem vídeo E sem áudio não é mídia: erro como CÓDIGO, nunca
+        // como frase em pt (que vazaria na tela de quem usa em espanhol).
+        let json = r#"{"streams":[{"codec_type":"subtitle","codec_name":"srt"}],"format":{}}"#;
+        assert_eq!(info_from_probe_json("a.srt", json).unwrap_err(), "no-video");
         // E JSON quebrado não pode dar panic.
         assert_eq!(info_from_probe_json("x", "{isso não é json").unwrap_err(), "bad-json");
     }

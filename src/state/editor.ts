@@ -6,7 +6,14 @@ import { t } from "../lib/i18n";
 import { applyMarkers, MarkerParseError, parseMarkers } from "../lib/markers";
 import { parseSubtitles, subtitleExtractArgs } from "../lib/subtitles";
 import { audioPeaksArgs, expectedSamples, PEAKS_PER_FILE } from "../lib/peaks";
-import { isImagePath, thumbTimes, withFps, type MediaInfo, type RawMediaInfo } from "../lib/probe";
+import {
+  isAudioPath,
+  isImagePath,
+  thumbTimes,
+  withFps,
+  type MediaInfo,
+  type RawMediaInfo,
+} from "../lib/probe";
 import { parseProject, ProjectParseError, serializeProject } from "../lib/project";
 import {
   addTitle,
@@ -355,16 +362,27 @@ export const useEditor = create<EditorState>((set, get) => ({
           }
           // O clipe entra INTEIRO (0..duração) no fim da trilha base. Imagem não
           // tem duração de arquivo (o probe diz 0): entra com a duração padrão de
-          // slide e a flag `image` (o export usa `-loop 1 -t`).
+          // slide e a flag `image` (o export usa `-loop 1 -t`). Arquivo só-áudio
+          // vai pro FIM DA TRILHA DE ÁUDIO (v0.15) — enfileirado na base ele
+          // viraria um trecho preto empurrando o vídeo pra frente.
           const isImg = isImagePath(path);
+          const isAud = isAudioPath(path);
           const tl = appendMedia(s.history.present, {
             path,
             srcIn: 0,
             srcOut: isImg ? DEFAULT_IMAGE_MS : info.durationMs,
             image: isImg,
+            audio: isAud,
           });
-          const base = baseVideoTrack(tl);
-          const last = base?.clips[base.clips.length - 1];
+          // A seleção é o clipe recém-criado — que agora pode estar na trilha de
+          // áudio, não só na base. Procurar sempre na base deixaria o import de
+          // um mp3 selecionando o vídeo de antes (ou nada).
+          // A PRIMEIRA trilha de áudio — a mesma que o `appendMedia` escolhe (e,
+          // quando ele precisou criar uma, a única que existe).
+          const target = isAud
+            ? tl.tracks.find((t) => t.kind === "audio")
+            : baseVideoTrack(tl);
+          const last = target?.clips[target.clips.length - 1];
           return {
             media,
             history: pushHistory(s.history, tl),
@@ -905,6 +923,11 @@ async function allowMedia(paths: string[]): Promise<void> {
 
 /** Extrai a tira de miniaturas de um arquivo (uma vez por arquivo). */
 async function loadThumbs(path: string, durationMs: number) {
+  // Arquivo só-áudio não tem miniatura pra extrair: o ffmpeg falharia N vezes em
+  // segundo plano por arquivo importado, calado (o `catch` abaixo engole). Um
+  // processo por nada não é bug visível, mas é desperdício previsível — e quem
+  // desenha a régua do áudio é a ONDA (`loadPeaks`), que roda logo em seguida.
+  if (isAudioPath(path)) return;
   if (durationMs <= 0 || useEditor.getState().thumbs[path]) return;
   const timesMs = thumbTimes(0, durationMs, THUMBS_PER_FILE);
   try {

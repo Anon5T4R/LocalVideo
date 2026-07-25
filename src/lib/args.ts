@@ -827,7 +827,14 @@ function targetFormat(
   const outW = preset && preset.width > 0 ? preset.width : w || 1920;
   const outH = preset && preset.height > 0 ? preset.height : h || 1080;
   const outFps = preset && preset.fps > 0 ? preset.fps : fps || 30;
-  return { w: outW, h: outH, fps: outFps };
+  // Dimensão ÍMPAR mata o export: o libx264 (yuv420p) exige os dois lados
+  // divisíveis por 2 e falha com "width not divisible by 2" — o render some com
+  // erro de ffmpeg em vez de sair. Isso não aparecia enquanto a resolução vinha
+  // sempre de um vídeo (câmera nenhuma grava em lado ímpar), mas com IMAGEM como
+  // clipe (v0.14) o tamanho passa a ser o da foto — e uma foto recortada à mão
+  // sai 1919×1079 sem cerimônia. Arredonda pra BAIXO: cortar uma linha de pixel
+  // é invisível, esticar uma seria inventar conteúdo.
+  return { w: Math.max(2, outW - (outW % 2)), h: Math.max(2, outH - (outH % 2)), fps: outFps };
 }
 
 /** A janela `[start,end)` do clipe na timeline, em segundos com 3 casas. */

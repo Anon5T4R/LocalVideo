@@ -3,9 +3,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { audioGainAt, audioLayersAt, hasMixAudio, usesNonDefaultAudioTrack } from "../lib/audiomix";
 import {
+  canDecodeLayers,
   colorToCanvasFilter,
   layersAt,
   needsComposite,
+  needsVideoDecode,
   slideOffset,
   wipeRect,
   type MediaLayer,
@@ -118,10 +120,10 @@ export default function Preview() {
   // usuário). O canvas é pintado nesse tamanho e o CSS encaixa na tela.
   const dims = useMemo(() => targetDims(timeline, media), [timeline, media]);
 
-  // Dá pra compor no canvas? (todos os arquivos ativos são decodificáveis exato)
+  // Dá pra compor no canvas? A regra (e por que imagem NÃO passa pelo portão do
+  // WebCodecs — o bug da prévia preta) mora em `canDecodeLayers`, puro e testado.
   const mediaLayers = layers.filter((l): l is MediaLayer => l.kind === "media");
-  const allDecodable =
-    hasWebCodecs() && mediaLayers.every((l) => !missing.includes(l.clip.path!) && canDecodeExactly(l.clip.path!));
+  const allDecodable = canDecodeLayers(layers, missing, canDecodeExactly);
 
   // `hit` do <video>: só vem de clipe de MÍDIA (o `timeToClip` filtra).
   const hitPath = baseHit?.clip.path ?? "";
@@ -172,10 +174,15 @@ export default function Preview() {
   const activeSlotRef = useRef(activeSlot);
   activeSlotRef.current = activeSlot;
 
-  // Modo de pintura do canvas quando PARADO:
+  // Composição sem vídeo pra decodificar (só imagem parada e/ou título) pode
+  // rodar DURANTE o play — a exceção e o porquê estão em `needsVideoDecode`.
+  const stillOnly = !needsVideoDecode(layers);
+
+  // Modo de pintura do canvas:
   //  - compor (várias camadas/filtros) se der pra decodificar tudo;
   //  - senão, o quadro exato da base (caminho da v0.2).
-  const doComposite = !playing && layers.length > 0 && composite && allDecodable;
+  // Parado, sempre; tocando, só quando não há vídeo pra decodificar (ver acima).
+  const doComposite = (!playing || stillOnly) && layers.length > 0 && composite && allDecodable;
 
   // Fecha os decodificadores dos arquivos que saíram da timeline (memória de
   // vídeo fora do alcance do GC).
@@ -682,8 +689,13 @@ export default function Preview() {
   /** O rodapé conta o que a prévia É — e por que, quando é aproximada. */
   const quality = (() => {
     if (!baseHit && layers.length === 0) return "";
-    if (playing) return composite ? t("preview.playApprox") : baseExact ? t("preview.exact") : rough();
-    // Parado:
+    // Tocando SEM compor: o `<video>` está no comando e a composição não aparece.
+    // Com `doComposite` ligado durante o play (composição sem vídeo — ver
+    // `stillOnly`) cai no ramo de baixo, porque aí o que se vê É a composição:
+    // dizer "pause pra ver" seria mentira ao contrário.
+    if (playing && !doComposite)
+      return composite ? t("preview.playApprox") : baseExact ? t("preview.exact") : rough();
+    // Parado (ou tocando uma composição que não precisa decodificar vídeo):
     if (composite) {
       if (!allDecodable) return t("preview.roughContainer"); // não deu pra compor
       return mediaLayers.some((l) => l.approx) ? t("preview.approx") : t("preview.wysiwyg");
@@ -732,7 +744,15 @@ export default function Preview() {
   // Buraco num filme que EXISTE: nem clipe embaixo, nem mídia sumida. A tela
   // fica preta (o fundo do `.stage` já é #000) e o tempo corre por cima — não é
   // "importe um vídeo" (isso é `total === 0`), é o vazio entre cortes.
-  const inGap = !baseHit && !gone && total > 0;
+  //
+  // `layers.length === 0` é a parte que faltava: "sem `baseHit`" NÃO quer dizer
+  // "sem imagem na tela". Imagem e título nunca entram no `timeToClip` (ele é a
+  // fonte do `<video>`, que não decodifica nenhum dos dois), então uma timeline
+  // feita de foto + música tinha `baseHit === null` o tempo todo e este preto
+  // opaco era pintado POR CIMA do canvas composto — o segundo motivo da tela
+  // preta ao montar um vídeo a partir de uma imagem. Buraco é quando não há
+  // camada nenhuma pra desenhar, não quando não há vídeo.
+  const inGap = !baseHit && !gone && total > 0 && layers.length === 0;
   // Dá pra tocar? Filme não-vazio e não parado num arquivo sumido. Vale pro
   // buraco também (corre pelo vazio) — por isso não exige `baseHit`.
   const canPlay = total > 0 && !gone;
@@ -807,7 +827,7 @@ export default function Preview() {
             <canvas
               ref={canvasRef}
               className="stage-canvas"
-              style={{ display: painted && !playing ? "block" : "none" }}
+              style={{ display: painted && (!playing || doComposite) ? "block" : "none" }}
             />
             {/* Buraco: um preto por cima do <video> escondido. Sem texto — o tempo
                 correndo no cabeçalho já diz que está tocando pelo vazio. */}

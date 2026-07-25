@@ -353,7 +353,7 @@ const pt = {
     "Você escolheu “{preset}”. Isso crava resolução/qualidade da saída, então o vídeo é recodificado (não é uma cópia simples).",
 
   "err.noRuntime": "o runtime de mídia (ffmpeg) não está instalado",
-  "err.noVideo": "este arquivo não tem trilha de vídeo",
+  "err.noVideo": "este arquivo não tem trilha de vídeo nem de áudio",
   "err.probeFailed": "não deu pra abrir este arquivo (formato não suportado ou arquivo danificado)",
   "err.thumbsFailed": "não deu pra gerar as miniaturas",
   "err.generic": "não deu pra abrir este arquivo",
@@ -370,6 +370,7 @@ const pt = {
   "proj.missingMedia": "{n} arquivo(s) deste projeto não foram encontrados.",
   "draft.restored": "Rascunho recuperado — salve num arquivo pra guardar de vez.",
   "proj.dlgVideo": "Vídeo",
+  "proj.dlgMedia": "Mídia (vídeo, imagem, áudio)",
   "proj.dlgProject": "Projeto do LocalVideo",
 
   "unsaved.title": "Salvar as alterações?",
@@ -738,7 +739,7 @@ const en: Record<MessageKey, string> = {
     "You picked “{preset}”. That pins the output resolution/quality, so the video is re-encoded (not a plain copy).",
 
   "err.noRuntime": "the media runtime (ffmpeg) isn't installed",
-  "err.noVideo": "this file has no video track",
+  "err.noVideo": "this file has no video or audio track",
   "err.probeFailed": "couldn't open this file (unsupported format or damaged file)",
   "err.thumbsFailed": "couldn't build the thumbnails",
   "err.generic": "couldn't open this file",
@@ -755,6 +756,7 @@ const en: Record<MessageKey, string> = {
   "proj.missingMedia": "{n} file(s) from this project couldn't be found.",
   "draft.restored": "Draft recovered — save to a file to keep it for good.",
   "proj.dlgVideo": "Video",
+  "proj.dlgMedia": "Media (video, image, audio)",
   "proj.dlgProject": "LocalVideo project",
 
   "unsaved.title": "Save your changes?",
@@ -1125,7 +1127,7 @@ const es: Record<MessageKey, string> = {
     "Elegiste «{preset}». Eso fija la resolución/calidad de salida, así que el vídeo se recodifica (no es una copia simple).",
 
   "err.noRuntime": "el runtime de medios (ffmpeg) no está instalado",
-  "err.noVideo": "este archivo no tiene pista de vídeo",
+  "err.noVideo": "este archivo no tiene pista de vídeo ni de audio",
   "err.probeFailed": "no se pudo abrir este archivo (formato no compatible o archivo dañado)",
   "err.thumbsFailed": "no se pudieron generar las miniaturas",
   "err.generic": "no se pudo abrir este archivo",
@@ -1142,6 +1144,7 @@ const es: Record<MessageKey, string> = {
   "proj.missingMedia": "No se encontraron {n} archivo(s) de este proyecto.",
   "draft.restored": "Borrador recuperado — guárdalo en un archivo para conservarlo.",
   "proj.dlgVideo": "Vídeo",
+  "proj.dlgMedia": "Medios (video, imagen, audio)",
   "proj.dlgProject": "Proyecto de LocalVideo",
 
   "unsaved.title": "¿Guardar los cambios?",

@@ -16,7 +16,7 @@ import Toasts from "./components/Toasts";
 import { t } from "./lib/i18n";
 import { shouldIgnoreShortcut } from "./lib/keys";
 import Icon from "./components/Icon";
-import { IMAGE_EXT, stepFrames } from "./lib/probe";
+import { AUDIO_EXT, IMAGE_EXT, stepFrames } from "./lib/probe";
 import { baseVideoTrack, clipCount, timelineDuration, timeToClip } from "./lib/timeline";
 import { baseName, useEditor } from "./state/editor";
 import { useExport } from "./state/export";
@@ -25,7 +25,11 @@ import { useUi } from "./state/ui";
 const VIDEO_EXT = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "mpg", "mpeg", "wmv", "ts", "flv"];
 // Imagens paradas entram como clipe de duração livre (v0.14). Mesmo caminho de
 // import; o editor marca a flag `image` pela extensão (ver `isImagePath`).
-const MEDIA_EXT = [...VIDEO_EXT, ...IMAGE_EXT];
+// Áudio (v0.15) entra pelo MESMO caminho, mas cai na trilha de ÁUDIO — ver
+// `isAudioPath` e `appendMedia`. Esta lista é usada em DOIS lugares (o filtro do
+// diálogo e o filtro do drop nativo): faltar num deles é o tipo de buraco que só
+// aparece quando o usuário arrasta em vez de clicar.
+const MEDIA_EXT = [...VIDEO_EXT, ...IMAGE_EXT, ...AUDIO_EXT];
 
 /**
  * O arquivo que o SO está arrastando está sobre o PAINEL de mídia?
@@ -135,7 +139,7 @@ export default function App() {
   const pickAndImport = useCallback(async () => {
     const picked = await openDialog({
       multiple: true,
-      filters: [{ name: t("proj.dlgVideo"), extensions: MEDIA_EXT }],
+      filters: [{ name: t("proj.dlgMedia"), extensions: MEDIA_EXT }],
     });
     if (!picked) return;
     await ed.importPaths(Array.isArray(picked) ? picked : [picked]);
