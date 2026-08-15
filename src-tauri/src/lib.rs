@@ -46,7 +46,22 @@ pub fn run() {
     // `WEBKIT_DISABLE_DMABUF_RENDERER=1` continua funcionando — e aí é sinal de
     // que sobrou lib de host em algum AppDir, que é onde se deve olhar.
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default()
+        .on_window_event(|window, event| {
+            // Bug do tao <= 0.35 no GNOME/Wayland: botões da titlebar (min/
+            // max/fechar) mortos até um resize (tauri#13440, tauri#11856). O
+            // toggle de `resizable` em cada foco força o GTK a revalidar as
+            // decorações, restaurando o estado original em seguida. Remover
+            // quando o tauri puxar o tao 0.36 (via wry 0.56).
+            #[cfg(target_os = "linux")]
+            if let tauri::WindowEvent::Focused(true) = event {
+                let r = window.is_resizable().unwrap_or(true);
+                let _ = window.set_resizable(!r);
+                let _ = window.set_resizable(r);
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = (window, event);
+        });
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
