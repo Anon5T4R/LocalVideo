@@ -25,6 +25,7 @@ use tauri::Manager;
 use ffmpeg::FfState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
 pub fn run() {
     // ── Contorno da tela branca do webkit: REMOVIDO, e o porquê importa ──────
     //
@@ -46,22 +47,7 @@ pub fn run() {
     // `WEBKIT_DISABLE_DMABUF_RENDERER=1` continua funcionando — e aí é sinal de
     // que sobrou lib de host em algum AppDir, que é onde se deve olhar.
 
-    let mut builder = tauri::Builder::default()
-        .on_window_event(|window, event| {
-            // Bug do tao <= 0.35 no GNOME/Wayland: botões da titlebar (min/
-            // max/fechar) mortos até um resize (tauri#13440, tauri#11856). O
-            // toggle de `resizable` em cada foco força o GTK a revalidar as
-            // decorações, restaurando o estado original em seguida. Remover
-            // quando o tauri puxar o tao 0.36 (via wry 0.56).
-            #[cfg(target_os = "linux")]
-            if let tauri::WindowEvent::Focused(true) = event {
-                let r = window.is_resizable().unwrap_or(true);
-                let _ = window.set_resizable(!r);
-                let _ = window.set_resizable(r);
-            }
-            #[cfg(not(target_os = "linux"))]
-            let _ = (window, event);
-        });
+    let mut builder = tauri::Builder::default();
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -80,6 +66,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(FfState::default())
         .setup(|app| {
+        // Titlebar limpa no GNOME/Wayland (tao <= 0.35) — ver lib.rs do LocalImage.
+        #[cfg(target_os = "linux")]
+        if let Some(w) = app.get_webview_window("main") {
+            instalar_csd_limpa(&w);
+        }
             // O `assetProtocol.scope` do config nasce VAZIO de propósito (ver o
             // porquê em `media::allow_media`). Quem entra no escopo é só: a nossa
             // pasta de miniaturas (aqui) e cada vídeo que o usuário escolher
@@ -118,4 +109,20 @@ pub fn run() {
                 ffmpeg::kill_all(&app.state::<FfState>());
             }
         });
+}
+
+/// Contorna a titlebar quebrada do tao <= 0.35 no GNOME/Wayland (CSD propia
+/// com regiao de input morta — causa e fix em tao#1218, so via tauri 2.12):
+/// troca por uma HeaderBar comum com layout forcado min/max/fechar, ANTES do
+/// primeiro map. Sai junto com o upgrade ao tao 0.36 (wry 0.56).
+#[cfg(target_os = "linux")]
+fn instalar_csd_limpa(w: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let Ok(gw) = w.gtk_window() else { return };
+    let header = gtk::HeaderBar::new();
+    header.set_show_close_button(true);
+    header.set_decoration_layout(Some("menu:minimize,maximize,close"));
+    header.set_title(Some("LocalVideo"));
+    header.show();
+    gw.set_titlebar(Some(&header));
 }
